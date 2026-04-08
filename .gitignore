@@ -1,0 +1,13 @@
+.DS_Store
+.pytest_cache/
+.venv/
+__pycache__/
+*.pyc
+backend/.venv/
+backend/.venv-backend/
+backend/.pytest_cache/
+backend/*.egg-info/
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+lib/
