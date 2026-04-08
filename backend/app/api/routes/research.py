@@ -8,6 +8,7 @@ from app.research.schemas import (
     ClarifyResponse,
     ResearchTaskCreateRequest,
     ResearchTaskCreateResponse,
+    ResearchTaskDeleteResponse,
     ResearchTaskFollowUpRequest,
     ResearchTaskDetail,
     ResearchTaskSummary,
@@ -23,8 +24,11 @@ async def clarify_topic(
     payload: ClarifyRequest,
     service: ResearchService = Depends(get_research_service),
 ) -> ClarifyResponse:
-    questions = await service.clarify_questions(payload)
-    return ClarifyResponse(questions=questions)
+    try:
+        questions = await service.clarify_questions(payload)
+        return ClarifyResponse(questions=questions)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/tasks", response_model=ResearchTaskCreateResponse)
@@ -69,6 +73,14 @@ async def get_task(
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
+
+
+@router.delete("/tasks/{task_id}", response_model=ResearchTaskDeleteResponse)
+async def delete_task(
+    task_id: str,
+    service: ResearchService = Depends(get_research_service),
+) -> ResearchTaskDeleteResponse:
+    return await service.delete_task(task_id)
 
 
 @router.get("/tasks/{task_id}/stream")

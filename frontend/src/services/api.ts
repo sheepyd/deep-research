@@ -17,8 +17,18 @@ async function request<T>(baseUrl: string, token: string, path: string, init?: R
     }
   });
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Request failed: ${response.status}`);
+    let errorMessage = `Request failed: ${response.status}`;
+    try {
+      const errorData = await response.json();
+      if (errorData.detail) {
+        errorMessage = typeof errorData.detail === 'string' ? errorData.detail : JSON.stringify(errorData.detail);
+      } else if (errorData.message) {
+        errorMessage = errorData.message;
+      }
+    } catch {
+      // ignore
+    }
+    throw new Error(errorMessage);
   }
   return response.json() as Promise<T>;
 }
@@ -75,4 +85,14 @@ export function fetchResearchTasks(
   limit = 20
 ): Promise<ResearchTaskSummary[]> {
   return request(baseUrl, token, `/api/v1/research/tasks?limit=${limit}`);
+}
+
+export function deleteResearchTask(
+  baseUrl: string,
+  token: string,
+  taskId: string
+): Promise<{ deleted: boolean }> {
+  return request(baseUrl, token, `/api/v1/research/tasks/${taskId}`, {
+    method: "DELETE"
+  });
 }

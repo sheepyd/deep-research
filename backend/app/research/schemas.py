@@ -8,6 +8,8 @@ class ClarifyRequest(BaseModel):
     query: str = Field(min_length=3)
     provider: str
     thinking_model: str
+    llm_api_key: Optional[str] = None
+    llm_base_url: Optional[str] = None
     language: str = "zh-CN"
 
 
@@ -25,7 +27,11 @@ class ResearchTaskCreateRequest(BaseModel):
     provider: str
     thinking_model: str
     task_model: str
+    llm_api_key: Optional[str] = None
+    llm_base_url: Optional[str] = None
     search_provider: str
+    search_api_key: Optional[str] = None
+    search_base_url: Optional[str] = None
     language: str = "zh-CN"
     max_results: int = Field(default=5, ge=1, le=10)
 
@@ -33,6 +39,10 @@ class ResearchTaskCreateRequest(BaseModel):
 class ResearchTaskCreateResponse(BaseModel):
     task_id: str
     status: str
+
+
+class ResearchTaskDeleteResponse(BaseModel):
+    deleted: bool
 
 
 class ResearchTaskFollowUpRequest(BaseModel):

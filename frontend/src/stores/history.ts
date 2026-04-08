@@ -1,12 +1,13 @@
 import { defineStore } from "pinia";
 
-import { fetchResearchTasks } from "../services/api";
+import { deleteResearchTask, fetchResearchTasks } from "../services/api";
 import type { ResearchTaskSummary } from "../types/research";
 import { useAuthStore } from "./auth";
 
 interface HistoryState {
   tasks: ResearchTaskSummary[];
   loading: boolean;
+  deletingTaskIds: string[];
   errorMessage: string;
 }
 
@@ -14,6 +15,7 @@ export const useHistoryStore = defineStore("history", {
   state: (): HistoryState => ({
     tasks: [],
     loading: false,
+    deletingTaskIds: [],
     errorMessage: ""
   }),
   actions: {
@@ -27,6 +29,23 @@ export const useHistoryStore = defineStore("history", {
         this.errorMessage = error instanceof Error ? error.message : "加载历史任务失败";
       } finally {
         this.loading = false;
+      }
+    },
+    async deleteTask(taskId: string) {
+      const auth = useAuthStore();
+      this.errorMessage = "";
+      if (this.deletingTaskIds.includes(taskId)) {
+        return;
+      }
+      this.deletingTaskIds.push(taskId);
+      try {
+        await deleteResearchTask(auth.apiBaseUrl, auth.token, taskId);
+        this.tasks = this.tasks.filter((task) => task.id !== taskId);
+      } catch (error) {
+        this.errorMessage = error instanceof Error ? error.message : "删除历史任务失败";
+        throw error;
+      } finally {
+        this.deletingTaskIds = this.deletingTaskIds.filter((id) => id !== taskId);
       }
     }
   }

@@ -8,7 +8,11 @@ export interface SettingsState {
   provider: string;
   thinkingModel: string;
   taskModel: string;
+  llmApiKey: string;
+  llmBaseUrl: string;
   searchProvider: string;
+  searchApiKey: string;
+  searchBaseUrl: string;
   language: string;
   maxResults: number;
   providers: ProviderCatalog;
@@ -44,7 +48,11 @@ function defaultState(): SettingsState {
     provider: "openai",
     thinkingModel: providers.llm_providers.openai.models[0],
     taskModel: providers.llm_providers.openai.models[0],
+    llmApiKey: "",
+    llmBaseUrl: "",
     searchProvider: "tavily",
+    searchApiKey: "",
+    searchBaseUrl: "",
     language: "zh-CN",
     maxResults: 5,
     providers
@@ -65,7 +73,11 @@ export const useSettingsStore = defineStore("settings", {
           provider: this.provider,
           thinkingModel: this.thinkingModel,
           taskModel: this.taskModel,
+          llmApiKey: this.llmApiKey,
+          llmBaseUrl: this.llmBaseUrl,
           searchProvider: this.searchProvider,
+          searchApiKey: this.searchApiKey,
+          searchBaseUrl: this.searchBaseUrl,
           language: this.language,
           maxResults: this.maxResults
         })

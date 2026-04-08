@@ -142,36 +142,48 @@ class SearxngSearchClient:
         return documents
 
 
-def create_llm(settings: Settings, provider: str, model: str) -> BaseChatModel:
+def create_llm(
+    settings: Settings,
+    provider: str,
+    model: str,
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> BaseChatModel:
     if provider == "openai":
         return ChatOpenAI(
             model=model,
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
+            api_key=api_key or settings.openai_api_key,
+            base_url=base_url or settings.openai_base_url,
             temperature=0,
         )
     if provider == "google":
         return ChatGoogleGenerativeAI(
             model=model,
-            google_api_key=settings.google_api_key,
+            google_api_key=api_key or settings.google_api_key,
             temperature=0,
         )
     if provider == "anthropic":
         return ChatAnthropic(
             model=model,
-            api_key=settings.anthropic_api_key,
+            api_key=api_key or settings.anthropic_api_key,
             temperature=0,
         )
     raise ValueError(f"Unsupported provider: {provider}")
 
 
-def create_search_client(settings: Settings, provider: str):
+def create_search_client(
+    settings: Settings,
+    provider: str,
+    api_key: str | None = None,
+    base_url: str | None = None,
+):
     if provider == "tavily":
-        if not settings.tavily_api_key:
+        key = api_key or settings.tavily_api_key
+        if not key:
             raise ValueError("Tavily API key is required")
-        return TavilySearchClient(settings.tavily_api_key)
+        return TavilySearchClient(key)
     if provider == "searxng":
-        return SearxngSearchClient(settings.searxng_base_url)
+        return SearxngSearchClient(base_url or settings.searxng_base_url)
     raise ValueError(f"Unsupported search provider: {provider}")
 
 

@@ -136,6 +136,9 @@ class FakeService:
             "events": [],
         }
 
+    async def delete_task(self, task_id):
+        return {"deleted": True}
+
     def stream_task_events(self, session, stream_manager, task_id):
         async def iterator():
             yield b"event: infor\ndata: {}\n\n"
@@ -193,6 +196,15 @@ def test_create_follow_up_task(client: TestClient) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "queued"
+
+
+def test_delete_task(client: TestClient) -> None:
+    response = client.delete(
+        f"/api/v1/research/tasks/{uuid4()}",
+        headers={"Authorization": "Bearer change-me"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"deleted": True}
 
 
 def test_mcp_tools_list(client: TestClient) -> None:

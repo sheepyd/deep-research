@@ -8,6 +8,7 @@ import { useSettingsStore } from "./settings";
 import type { EventRecord, ResearchTaskDetail, SseEvent } from "../types/research";
 
 const TASK_KEY = "deep-research-last-task-id";
+let activeStreamController: AbortController | null = null;
 
 interface ProgressState {
   step: string;
@@ -43,7 +44,7 @@ function defaultState(): ResearchState {
     lastClarifiedQuery: "",
     clarifyQuestions: [],
     answers: [],
-    taskId: localStorage.getItem(TASK_KEY) ?? "",
+    taskId: "",
     status: "idle",
     loadingClarify: false,
     loadingTask: false,
@@ -66,13 +67,28 @@ export const useResearchStore = defineStore("research", {
         this.clarifyQuestions = [];
         this.answers = [];
         this.lastClarifiedQuery = "";
+        this.errorMessage = "";
       }
       this.query = value;
     },
     updateAnswer(index: number, value: string) {
       this.answers[index] = value;
     },
+    clearDeletedTask(taskId: string) {
+      if (this.taskId !== taskId) {
+        return;
+      }
+      this.resetTask();
+      this.taskId = "";
+      this.query = "";
+      this.lastClarifiedQuery = "";
+      this.clarifyQuestions = [];
+      this.answers = [];
+      localStorage.removeItem(TASK_KEY);
+    },
     resetTask() {
+      activeStreamController?.abort();
+      activeStreamController = null;
       this.status = "idle";
       this.eventLog = [];
       this.reasoningLog = [];
@@ -93,9 +109,14 @@ export const useResearchStore = defineStore("research", {
           query: this.query,
           provider: settings.provider,
           thinking_model: settings.thinkingModel,
+          llm_api_key: settings.llmApiKey || undefined,
+          llm_base_url: settings.llmBaseUrl || undefined,
           language: settings.language
         });
         this.clarifyQuestions = result.questions;
+        if (this.clarifyQuestions.length === 0) {
+          this.errorMessage = "模型未能生成澄清问题，请检查模型配置或稍后重试。";
+        }
         this.answers = result.questions.map(() => "");
         this.lastClarifiedQuery = this.query;
       } catch (error) {
@@ -122,15 +143,19 @@ export const useResearchStore = defineStore("research", {
           provider: settings.provider,
           thinking_model: settings.thinkingModel,
           task_model: settings.taskModel,
+          llm_api_key: settings.llmApiKey || undefined,
+          llm_base_url: settings.llmBaseUrl || undefined,
           search_provider: settings.searchProvider,
+          search_api_key: settings.searchApiKey || undefined,
+          search_base_url: settings.searchBaseUrl || undefined,
           language: settings.language,
           max_results: settings.maxResults
         });
         this.taskId = result.task_id;
         this.status = result.status;
         localStorage.setItem(TASK_KEY, this.taskId);
-        await history.loadTasks();
-        await this.connectStream(this.taskId);
+        void history.loadTasks();
+        void this.connectStream(this.taskId);
       } catch (error) {
         this.errorMessage = error instanceof Error ? error.message : "任务启动失败";
       } finally {
@@ -152,8 +177,8 @@ export const useResearchStore = defineStore("research", {
         this.taskId = result.task_id;
         this.status = result.status;
         localStorage.setItem(TASK_KEY, this.taskId);
-        await history.loadTasks();
-        await this.connectStream(this.taskId);
+        void history.loadTasks();
+        void this.connectStream(this.taskId);
       } catch (error) {
         this.errorMessage = error instanceof Error ? error.message : "追加研究启动失败";
       } finally {
@@ -230,13 +255,28 @@ export const useResearchStore = defineStore("research", {
     },
     async connectStream(taskId: string) {
       const auth = useAuthStore();
-      await openTaskStream(
-        `${auth.apiBaseUrl}/api/v1/research/tasks/${taskId}/stream`,
-        auth.token,
-        (event) => {
-          this.applySseEvent(event);
+      activeStreamController?.abort();
+      const controller = new AbortController();
+      activeStreamController = controller;
+      try {
+        await openTaskStream(
+          `${auth.apiBaseUrl}/api/v1/research/tasks/${taskId}/stream`,
+          auth.token,
+          (event) => {
+            this.applySseEvent(event);
+          },
+          controller.signal
+        );
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          this.errorMessage = error instanceof Error ? error.message : "任务流连接失败";
+          this.status = "failed";
         }
-      );
+      } finally {
+        if (activeStreamController === controller) {
+          activeStreamController = null;
+        }
+      }
     }
   }
 });

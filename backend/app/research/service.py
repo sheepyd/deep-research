@@ -28,6 +28,7 @@ from app.research.repository import ResearchRepository
 from app.research.schemas import (
     ClarifyRequest,
     ResearchTaskCreateRequest,
+    ResearchTaskDeleteResponse,
     ResearchTaskDetail,
     ResearchTaskSummary,
 )
@@ -62,17 +63,20 @@ class ResearchService:
     def __init__(self, settings: Settings, stream_manager: StreamManager) -> None:
         self.settings = settings
         self.stream_manager = stream_manager
+        self._task_locks: dict[str, asyncio.Lock] = {}
+        self._task_runs: dict[str, asyncio.Task[None]] = {}
 
     async def clarify_questions(self, payload: ClarifyRequest) -> list[str]:
-        llm = create_llm(self.settings, payload.provider, payload.thinking_model)
-        content = await llm.ainvoke(
-            [
-                HumanMessage(
-                    content=CLARIFY_PROMPT.format(query=payload.query, language=payload.language)
-                )
-            ]
-        )
-        raw = getattr(content, "content", "")
+        llm = create_llm(self.settings, payload.provider, payload.thinking_model, payload.llm_api_key, payload.llm_base_url)
+        messages = [
+            HumanMessage(
+                content=CLARIFY_PROMPT.format(query=payload.query, language=payload.language)
+            )
+        ]
+        raw = ""
+        async for chunk in llm.astream(messages):
+            if chunk.content:
+                raw += chunk.content
         lines = [line.strip("- ").strip() for line in str(raw).splitlines() if line.strip()]
         return lines[:5]
 
@@ -96,7 +100,8 @@ class ResearchService:
                 language=payload.language,
                 max_results=payload.max_results,
             )
-        asyncio.create_task(self.run_task(task_id=str(task.id), payload=payload))
+        background_task = asyncio.create_task(self.run_task(task_id=str(task.id), payload=payload))
+        self._task_runs[str(task.id)] = background_task
         return task
 
     async def create_follow_up_task(
@@ -253,6 +258,29 @@ class ResearchService:
             for task in tasks
         ]
 
+    async def delete_task(self, task_id: str) -> ResearchTaskDeleteResponse:
+        async with AsyncSessionLocal() as session:
+            repo = ResearchRepository(session)
+            task = await repo.get_task(task_id)
+            if task is None:
+                raise HTTPException(status_code=404, detail="Task not found")
+            active_run = self._task_runs.get(task_id)
+            if active_run is not None and not active_run.done():
+                active_run.cancel()
+                await asyncio.gather(active_run, return_exceptions=True)
+            if task.status in {"queued", "running"}:
+                await self.stream_manager.publish(
+                    task_id,
+                    {
+                        "event": "done",
+                        "data": {"task_id": task_id, "status": "deleted"},
+                    },
+                )
+            await repo.delete_task(task)
+        self._task_locks.pop(task_id, None)
+        self._task_runs.pop(task_id, None)
+        return ResearchTaskDeleteResponse(deleted=True)
+
     async def stream_task_events(
         self,
         *,
@@ -280,6 +308,7 @@ class ResearchService:
             stream_manager.unsubscribe(task_id, queue)
 
     async def run_task(self, *, task_id: str, payload: ResearchTaskCreateRequest) -> None:
+        self._task_lock(task_id)
         async with AsyncSessionLocal() as session:
             repo = ResearchRepository(session)
             task = await repo.get_task(task_id)
@@ -299,7 +328,11 @@ class ResearchService:
                 "provider": payload.provider,
                 "thinking_model": payload.thinking_model,
                 "task_model": payload.task_model,
+                "llm_api_key": payload.llm_api_key,
+                "llm_base_url": payload.llm_base_url,
                 "search_provider": payload.search_provider,
+                "search_api_key": payload.search_api_key,
+                "search_base_url": payload.search_base_url,
                 "max_results": payload.max_results,
                 "brief": "",
                 "previous_report": "",
@@ -354,6 +387,9 @@ class ResearchService:
                     event="done",
                     data={"task_id": task_id, "status": "failed"},
                 )
+            finally:
+                self._task_locks.pop(task_id, None)
+                self._task_runs.pop(task_id, None)
 
     def _build_graph(self, repo: ResearchRepository):
         graph = StateGraph(dict)
@@ -429,7 +465,13 @@ class ResearchService:
         return {**state, "questions": questions, "answers": answers}
 
     async def _build_research_brief(self, repo: ResearchRepository, state: dict[str, Any]) -> dict[str, Any]:
-        llm = create_llm(self.settings, state["provider"], state["thinking_model"])
+        llm = create_llm(
+            self.settings,
+            state["provider"],
+            state["thinking_model"],
+            state.get("llm_api_key"),
+            state.get("llm_base_url"),
+        )
         answers = self._format_clarify_pairs(state["questions"], state["answers"])
         response = await llm.ainvoke(
             [
@@ -465,7 +507,13 @@ class ResearchService:
             "start",
             role="supervisor",
         )
-        llm = create_llm(self.settings, state["provider"], state["thinking_model"])
+        llm = create_llm(
+            self.settings,
+            state["provider"],
+            state["thinking_model"],
+            state.get("llm_api_key"),
+            state.get("llm_base_url"),
+        )
         response = await llm.ainvoke(
             [HumanMessage(content=REPORT_PLAN_PROMPT.format(brief=state["brief"], language=state["language"]))]
         )
@@ -499,20 +547,35 @@ class ResearchService:
             "start",
             role="supervisor",
         )
-        llm = create_llm(self.settings, state["provider"], state["thinking_model"])
-        response = await llm.ainvoke(
-            [
-                HumanMessage(
-                    content=SEARCH_QUERY_PROMPT.format(
-                        plan=state["report_plan"],
-                        language=state["language"],
-                    )
+        llm = create_llm(self.settings, state["provider"], state["thinking_model"], state.get("llm_api_key"), state.get("llm_base_url"))
+        messages = [
+            HumanMessage(
+                content=SEARCH_QUERY_PROMPT.format(
+                    plan=state["report_plan"],
+                    language=state["language"],
                 )
-            ]
-        )
-        search_tasks = parse_json_response(str(getattr(response, "content", "")))
+            )
+        ]
+        raw = ""
+        async for chunk in llm.astream(messages):
+            if chunk.content:
+                raw += chunk.content
+        search_tasks = parse_json_response(str(raw))
         if not isinstance(search_tasks, list):
             raise ValueError("Search task generation returned invalid payload")
+        search_tasks = self._normalize_search_tasks(search_tasks)
+        if not search_tasks:
+            search_tasks = self._fallback_search_tasks(
+                query=state["query"],
+                brief=state["brief"],
+                language=state["language"],
+            )
+            await self._emit_reasoning(
+                repo,
+                state["task_id"],
+                "Supervisor received no usable search tasks from the model and switched to fallback query generation.",
+                role="supervisor",
+            )
         await self._emit_reasoning(
             repo,
             state["task_id"],
@@ -530,7 +593,7 @@ class ResearchService:
         return {**state, "search_tasks": search_tasks}
 
     async def _run_search_tasks(self, repo: ResearchRepository, state: dict[str, Any]) -> dict[str, Any]:
-        search_client = create_search_client(self.settings, state["search_provider"])
+        search_client = create_search_client(self.settings, state["search_provider"], state.get("search_api_key"), state.get("search_base_url"))
         concurrency = max(1, int(self.settings.research_concurrency or 1))
         tasks_to_run = list(state["search_tasks"])
         await self._emit_reasoning(
@@ -615,6 +678,8 @@ class ResearchService:
             task_id=state["task_id"],
             provider=state["provider"],
             model=state["task_model"],
+            api_key=state.get("llm_api_key"),
+            base_url=state.get("llm_base_url"),
             query=query,
             research_goal=research_goal,
             docs=docs,
@@ -656,11 +721,28 @@ class ResearchService:
         task_id: str,
         provider: str,
         model: str,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
         query: str,
         research_goal: str,
         docs: list[SearchDocument],
         language: str,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if not docs:
+            await self._emit_reasoning(
+                repo,
+                task_id,
+                f"Researcher could not summarize '{query}' because the search provider returned no usable sources.",
+                role="researcher",
+            )
+            return self._insufficient_search_summary(language), {
+                "attempt": 1,
+                "compression_mode": "no-sources",
+                "compressed_context": False,
+                "source_count_used": 0,
+                "source_char_budget": 0,
+            }
+
         retry_plans = self._build_search_retry_plans(len(docs))
         last_error: Optional[Exception] = None
         for attempt, plan in enumerate(retry_plans, start=1):
@@ -670,21 +752,37 @@ class ResearchService:
                 per_doc_chars=plan["per_doc_chars"],
                 total_chars=plan["total_chars"],
             )
-            try:
-                llm = create_llm(self.settings, provider, model)
-                summary = await llm.ainvoke(
-                    [
-                        HumanMessage(
-                            content=SEARCH_SUMMARY_PROMPT.format(
-                                query=query,
-                                research_goal=research_goal,
-                                sources=sources_text,
-                                language=language,
-                            )
-                        )
-                    ]
+            if source_count_used == 0:
+                await self._emit_reasoning(
+                    repo,
+                    task_id,
+                    f"Researcher could not summarize '{query}' because source snippets were empty after compression.",
+                    role="researcher",
                 )
-                payload = parse_json_response(str(getattr(summary, "content", "")))
+                return self._insufficient_search_summary(language), {
+                    "attempt": attempt,
+                    "compression_mode": plan["label"],
+                    "compressed_context": attempt > 1,
+                    "source_count_used": 0,
+                    "source_char_budget": plan["total_chars"],
+                }
+            try:
+                llm = create_llm(self.settings, provider, model, api_key, base_url)
+                messages = [
+                    HumanMessage(
+                        content=SEARCH_SUMMARY_PROMPT.format(
+                            query=query,
+                            research_goal=research_goal,
+                            sources=sources_text,
+                            language=language,
+                        )
+                    )
+                ]
+                raw = ""
+                async for chunk in llm.astream(messages):
+                    if chunk.content:
+                        raw += chunk.content
+                payload = parse_json_response(str(raw))
                 if not isinstance(payload, dict):
                     raise ValueError("Search summary returned invalid payload")
                 if attempt > 1:
@@ -724,6 +822,20 @@ class ResearchService:
         repo: ResearchRepository,
         state: dict[str, Any],
     ) -> tuple[str, dict[str, Any]]:
+        if not self._has_actionable_learnings(state["learnings"]):
+            await self._emit_reasoning(
+                repo,
+                state["task_id"],
+                "Supervisor skipped final synthesis because the collected learnings were not evidence-backed.",
+                role="supervisor",
+            )
+            return self._build_insufficient_evidence_report(state["query"], state["language"]), {
+                "attempt": 1,
+                "compression_mode": "insufficient-evidence",
+                "compressed_context": False,
+                "learning_count": 0,
+            }
+
         retry_plans = self._build_final_report_retry_plans(len(state["learnings"]))
         last_error: Optional[Exception] = None
         for attempt, plan in enumerate(retry_plans, start=1):
@@ -733,19 +845,21 @@ class ResearchService:
                 total_chars=plan["total_chars"],
             )
             try:
-                llm = create_llm(self.settings, state["provider"], state["task_model"])
-                response = await llm.ainvoke(
-                    [
-                        HumanMessage(
-                            content=FINAL_REPORT_PROMPT.format(
-                                plan=state["report_plan"],
-                                learnings=learnings_text,
-                                language=state["language"],
-                            )
+                llm = create_llm(self.settings, state["provider"], state["task_model"], state.get("llm_api_key"), state.get("llm_base_url"))
+                messages = [
+                    HumanMessage(
+                        content=FINAL_REPORT_PROMPT.format(
+                            plan=state["report_plan"],
+                            learnings=learnings_text,
+                            language=state["language"],
                         )
-                    ]
-                )
-                final_report = str(getattr(response, "content", "")).strip()
+                    )
+                ]
+                raw = ""
+                async for chunk in llm.astream(messages):
+                    if chunk.content:
+                        raw += chunk.content
+                final_report = str(raw).strip()
                 if attempt > 1:
                     await self._emit_reasoning(
                         repo,
@@ -882,9 +996,100 @@ class ResearchService:
         return "\n".join(rendered), used
 
     @staticmethod
+    def _normalize_search_tasks(tasks: list[object]) -> list[dict[str, str]]:
+        normalized: list[dict[str, str]] = []
+        seen_queries: set[str] = set()
+        for item in tasks:
+            if not isinstance(item, dict):
+                continue
+            query = str(item.get("query", "")).strip()
+            if not query:
+                continue
+            query_key = query.casefold()
+            if query_key in seen_queries:
+                continue
+            research_goal = str(item.get("research_goal", "")).strip() or "Gather relevant evidence for the topic."
+            normalized.append({"query": query, "research_goal": research_goal})
+            seen_queries.add(query_key)
+        return normalized[:5]
+
+    @staticmethod
+    def _fallback_search_tasks(query: str, brief: str, language: str) -> list[dict[str, str]]:
+        base = (query or brief).strip()
+        if language.lower().startswith("zh"):
+            return [
+                {"query": f"{base} 发展历程 关键论文", "research_goal": "梳理该主题的重要论文、提出时间和技术演进。"},
+                {"query": f"{base} 代表性框架 产品 应用", "research_goal": "收集代表性框架、产品和真实应用案例。"},
+                {"query": f"{base} 挑战 局限 最新进展", "research_goal": "总结当前挑战、局限和最近阶段的重要进展。"},
+            ]
+        return [
+            {"query": f"{base} evolution key papers", "research_goal": "Trace the main papers and milestones behind the topic."},
+            {"query": f"{base} frameworks products applications", "research_goal": "Collect representative frameworks, products, and real-world uses."},
+            {"query": f"{base} challenges limitations latest progress", "research_goal": "Summarize current limitations and recent progress."},
+        ]
+
+    @staticmethod
+    def _insufficient_search_summary(language: str) -> dict[str, str]:
+        if language.lower().startswith("zh"):
+            return {
+                "learning": "检索结果不足，当前不能基于证据得出可靠结论。",
+                "reasoning": "搜索阶段没有返回可用网页正文，继续总结只会放大幻觉。",
+            }
+        return {
+            "learning": "The retrieved evidence is insufficient to support a reliable conclusion.",
+            "reasoning": "The search stage returned no usable source content, so further synthesis would be speculative.",
+        }
+
+    @staticmethod
+    def _has_actionable_learnings(learnings: list[str]) -> bool:
+        stripped = [item.strip() for item in learnings if item and item.strip()]
+        if not stripped:
+            return False
+        blocked_markers = {
+            "检索结果不足，当前不能基于证据得出可靠结论。",
+            "The retrieved evidence is insufficient to support a reliable conclusion.",
+        }
+        return any(item not in blocked_markers for item in stripped)
+
+    @staticmethod
+    def _build_insufficient_evidence_report(query: str, language: str) -> str:
+        if language.lower().startswith("zh"):
+            return (
+                f"# {query}\n\n"
+                "## 执行结果\n\n"
+                "当前报告未生成可信结论，因为检索阶段没有收集到足够的有效来源正文。\n\n"
+                "## 为什么会这样\n\n"
+                "- 搜索结果为空，或只返回了很短的摘要片段。\n"
+                "- 证据不足时继续让模型总结，会产出看似通顺但没有事实支撑的内容。\n\n"
+                "## 建议下一步\n\n"
+                "- 检查搜索 provider 是否正常返回正文内容。\n"
+                "- 换用更稳定的搜索源，或提高 `max_results`。\n"
+                "- 缩小主题范围，例如改成“RAG 在 2020-2026 年的重要论文和产品演进”。\n"
+            )
+        return (
+            f"# {query}\n\n"
+            "## Result\n\n"
+            "A reliable report could not be produced because the search stage did not collect enough usable source content.\n\n"
+            "## Why\n\n"
+            "- Search returned no results, or only very short snippets.\n"
+            "- Continuing synthesis without evidence would produce fluent but unsupported text.\n\n"
+            "## Next steps\n\n"
+            "- Verify that the search provider returns full page content.\n"
+            "- Try a more reliable search source, or increase `max_results`.\n"
+            "- Narrow the topic scope before rerunning the task.\n"
+        )
+
+    @staticmethod
     def _compact_error(error: Exception) -> str:
         message = str(error).replace("\n", " ").strip()
         return message[:160] if message else error.__class__.__name__
+
+    def _task_lock(self, task_id: str) -> asyncio.Lock:
+        lock = self._task_locks.get(task_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._task_locks[task_id] = lock
+        return lock
 
     async def _emit_progress(
         self,
@@ -909,10 +1114,11 @@ class ResearchService:
             payload["compressed_context"] = compressed_context
         if extra:
             payload["data"] = extra
-        await self._emit_event(repo=repo, task_id=task_id, event="progress", data=payload, step=step)
-        task = await repo.get_task(task_id)
-        if task is not None:
-            await repo.update_task(task, current_step=step)
+        async with self._task_lock(task_id):
+            await self._emit_event_unlocked(repo=repo, task_id=task_id, event="progress", data=payload, step=step)
+            task = await repo.get_task(task_id)
+            if task is not None:
+                await repo.update_task(task, current_step=step)
 
     async def _emit_reasoning(
         self,
@@ -930,6 +1136,24 @@ class ResearchService:
         await self._emit_event(repo=repo, task_id=task_id, event="message", data={"type": "text", "text": text})
 
     async def _emit_event(
+        self,
+        *,
+        repo: ResearchRepository,
+        task_id: str,
+        event: str,
+        data: dict[str, object],
+        step: Optional[str] = None,
+    ) -> None:
+        async with self._task_lock(task_id):
+            await self._emit_event_unlocked(
+                repo=repo,
+                task_id=task_id,
+                event=event,
+                data=data,
+                step=step,
+            )
+
+    async def _emit_event_unlocked(
         self,
         *,
         repo: ResearchRepository,

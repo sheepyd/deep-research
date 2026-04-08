@@ -53,6 +53,9 @@ Use the provided sources to produce:
 1. A concise learning paragraph.
 2. A short reasoning note that explains what mattered in these results.
 Return valid JSON only with keys "learning" and "reasoning".
+Base every statement strictly on the provided sources.
+If the sources are missing or too weak to support a claim, say that evidence is insufficient instead of guessing.
+Do not fabricate dates, product names, market shares, milestones, references, or trends that are not present in the sources.
 Output in {language}.
 
 Search query: {query}
@@ -72,6 +75,9 @@ Use the research plan and the collected learnings to produce a structured Markdo
 - Risks and open questions
 - References
 
+Base every claim strictly on the collected learnings.
+If the learnings are insufficient, write a short report that clearly states the evidence gap and what additional sources are needed.
+Do not invent history, timelines, company activity, technical trends, or references.
 Output in {language}.
 
 Research plan:

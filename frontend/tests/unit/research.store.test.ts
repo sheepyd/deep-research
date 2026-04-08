@@ -1,12 +1,37 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 
 import { useResearchStore } from "../../src/stores/research";
+import { useAuthStore } from "../../src/stores/auth";
+import { useSettingsStore } from "../../src/stores/settings";
+import { useHistoryStore } from "../../src/stores/history";
+
+vi.mock("../../src/services/api", () => ({
+  clarifyResearch: vi.fn(),
+  createFollowUpResearchTask: vi.fn(),
+  createResearchTask: vi.fn(async () => ({ task_id: "task-1", status: "queued" })),
+  fetchResearchTask: vi.fn(),
+  fetchResearchTasks: vi.fn(),
+  deleteResearchTask: vi.fn()
+}));
+
+vi.mock("../../src/services/sse", () => ({
+  openTaskStream: vi.fn(
+    () =>
+      new Promise<void>(() => {
+        // Keep the stream open to mimic a long-running task.
+      })
+  )
+}));
+
+import { createResearchTask } from "../../src/services/api";
+import { openTaskStream } from "../../src/services/sse";
 
 describe("research store", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     localStorage.clear();
+    vi.clearAllMocks();
   });
 
   it("applies report-plan and final-report events in order", () => {
@@ -68,5 +93,59 @@ describe("research store", () => {
       attempt: 2,
       compressedContext: true
     });
+  });
+
+  it("clears loadingTask after task creation without waiting for stream or history refresh", async () => {
+    const authStore = useAuthStore();
+    const settingsStore = useSettingsStore();
+    const historyStore = useHistoryStore();
+    const store = useResearchStore();
+
+    authStore.apiBaseUrl = "http://localhost:8000";
+    authStore.token = "change-me";
+    settingsStore.provider = "openai";
+    settingsStore.thinkingModel = "gpt-5.4-mini";
+    settingsStore.taskModel = "gpt-5.4-mini";
+    settingsStore.searchProvider = "searxng";
+    settingsStore.language = "zh-CN";
+    settingsStore.maxResults = 5;
+    historyStore.loadTasks = vi.fn(
+      () =>
+        new Promise<void>(() => {
+          // Keep history refresh pending to verify it does not block the start button spinner.
+        })
+    );
+
+    store.query = "rag技术的发展情况";
+    store.clarifyQuestions = ["你更关注论文、产品还是工程实践？"];
+    store.answers = ["都关注"];
+    store.lastClarifiedQuery = store.query;
+
+    await store.startResearch();
+
+    expect(createResearchTask).toHaveBeenCalled();
+    expect(historyStore.loadTasks).toHaveBeenCalled();
+    expect(openTaskStream).toHaveBeenCalled();
+    expect(store.loadingTask).toBe(false);
+    expect(store.taskId).toBe("task-1");
+  });
+
+  it("clears loaded task state when the active history item is deleted", () => {
+    const store = useResearchStore();
+
+    store.taskId = "task-1";
+    store.query = "RAG 技术的发展情况";
+    store.lastClarifiedQuery = "RAG 技术的发展情况";
+    store.clarifyQuestions = ["Q1"];
+    store.answers = ["A1"];
+    store.status = "completed";
+    localStorage.setItem("deep-research-last-task-id", "task-1");
+
+    store.clearDeletedTask("task-1");
+
+    expect(store.taskId).toBe("");
+    expect(store.query).toBe("");
+    expect(store.clarifyQuestions).toEqual([]);
+    expect(localStorage.getItem("deep-research-last-task-id")).toBeNull();
   });
 });

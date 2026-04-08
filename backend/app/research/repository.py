@@ -137,3 +137,7 @@ class ResearchRepository:
             select(ResearchTask).order_by(ResearchTask.created_at.desc()).limit(limit)
         )
         return list(result.scalars().all())
+
+    async def delete_task(self, task: ResearchTask) -> None:
+        await self.session.delete(task)
+        await self.session.commit()
