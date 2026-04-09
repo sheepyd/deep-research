@@ -95,7 +95,7 @@
 
 ## 环境变量
 
-先复制：
+如果你要覆盖默认端口、数据库密码或 API Token，再复制：
 
 ```bash
 cp .env.example .env
@@ -106,7 +106,10 @@ cp .env.example .env
 | 变量 | 说明 |
 | --- | --- |
 | `API_BEARER_TOKEN` | 后端 Bearer Token，除 `/health` 外所有 `/api/v1/*` 请求都要带上 |
-| `DATABASE_URL` | PostgreSQL 连接串 |
+| `APP_PORT` | Docker Compose 对外暴露的 HTTP 端口，默认 `80` |
+| `POSTGRES_DB` | PostgreSQL 数据库名 |
+| `POSTGRES_USER` | PostgreSQL 用户名 |
+| `POSTGRES_PASSWORD` | PostgreSQL 密码 |
 | `OPENAI_API_KEY` | OpenAI 或兼容网关 API Key |
 | `OPENAI_BASE_URL` | OpenAI 兼容网关地址，可选 |
 | `OPENAI_MODEL_LIST` | 前端可选 OpenAI 模型列表，逗号分隔 |
@@ -116,6 +119,7 @@ cp .env.example .env
 | `ANTHROPIC_MODEL_LIST` | 前端可选 Anthropic 模型列表，逗号分隔 |
 | `TAVILY_API_KEY` | Tavily 搜索 Key |
 | `SEARXNG_BASE_URL` | SearxNG 服务地址 |
+| `RESEARCH_CONCURRENCY` | 后端并发搜索任务数，VPS 建议先用 `1-2` |
 | `MCP_AI_PROVIDER` | MCP 默认 AI Provider |
 | `MCP_THINKING_MODEL` | MCP 默认 Thinking Model |
 | `MCP_TASK_MODEL` | MCP 默认 Task Model |
@@ -175,8 +179,34 @@ docker compose up --build
 
 启动后访问：
 
-- 前端：`http://localhost:5173`
-- 后端：`http://localhost:8000`
+- 工作台：`http://localhost`
+- API 健康检查：`http://localhost/api/v1/health`
+
+当前 `docker-compose.yml` 已经是可直接部署的单机版本：
+
+- 前端会构建成静态文件，并由 `nginx` 提供服务。
+- `/api/*` 会由 `nginx` 反向代理到后端 `FastAPI`。
+- PostgreSQL 只暴露在容器内部网络，不对公网开放。
+- 如果仓库根目录没有 `.env`，Compose 也会使用内置默认值直接启动。
+
+最短路径：
+
+```bash
+git clone <your-repo>
+cd deep-research
+docker compose up -d --build
+```
+
+如果是在 VPS 上，建议至少做这两项覆盖：
+
+```bash
+cp .env.example .env
+```
+
+然后修改：
+
+- `API_BEARER_TOKEN`
+- `POSTGRES_PASSWORD`
 
 ### 后端本地开发
 

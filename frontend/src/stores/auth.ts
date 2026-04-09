@@ -7,15 +7,22 @@ interface AuthState {
   token: string;
 }
 
+function defaultApiBaseUrl(): string {
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return window.location.origin;
+  }
+  return "http://localhost:8000";
+}
+
 function loadState(): AuthState {
   try {
     const raw = localStorage.getItem(AUTH_KEY);
     if (!raw) {
-      return { apiBaseUrl: "http://localhost:8000", token: "change-me" };
+      return { apiBaseUrl: defaultApiBaseUrl(), token: "change-me" };
     }
     return JSON.parse(raw) as AuthState;
   } catch {
-    return { apiBaseUrl: "http://localhost:8000", token: "change-me" };
+    return { apiBaseUrl: defaultApiBaseUrl(), token: "change-me" };
   }
 }
 
@@ -32,4 +39,3 @@ export const useAuthStore = defineStore("auth", {
     }
   }
 });
-
