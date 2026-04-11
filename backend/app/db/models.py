@@ -13,6 +13,7 @@ class ResearchTask(Base):
     __tablename__ = "research_tasks"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     parent_task_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("research_tasks.id", ondelete="SET NULL"),

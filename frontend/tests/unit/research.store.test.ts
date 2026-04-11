@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 
 import { useResearchStore } from "../../src/stores/research";
-import { useAuthStore } from "../../src/stores/auth";
 import { useSettingsStore } from "../../src/stores/settings";
 import { useHistoryStore } from "../../src/stores/history";
 
@@ -96,13 +95,10 @@ describe("research store", () => {
   });
 
   it("clears loadingTask after task creation without waiting for stream or history refresh", async () => {
-    const authStore = useAuthStore();
     const settingsStore = useSettingsStore();
     const historyStore = useHistoryStore();
     const store = useResearchStore();
 
-    authStore.apiBaseUrl = "http://localhost:8000";
-    authStore.token = "change-me";
     settingsStore.provider = "openai";
     settingsStore.thinkingModel = "gpt-5.4-mini";
     settingsStore.taskModel = "gpt-5.4-mini";
@@ -123,9 +119,23 @@ describe("research store", () => {
 
     await store.startResearch();
 
-    expect(createResearchTask).toHaveBeenCalled();
+    expect(createResearchTask).toHaveBeenCalledWith({
+      query: "rag技术的发展情况",
+      questions: ["你更关注论文、产品还是工程实践？"],
+      answers: ["都关注"],
+      provider: "openai",
+      thinking_model: "gpt-5.4-mini",
+      task_model: "gpt-5.4-mini",
+      search_provider: "searxng",
+      language: "zh-CN",
+      max_results: 5
+    });
     expect(historyStore.loadTasks).toHaveBeenCalled();
-    expect(openTaskStream).toHaveBeenCalled();
+    expect(openTaskStream).toHaveBeenCalledWith(
+      "/api/v1/research/tasks/task-1/stream",
+      expect.any(Function),
+      expect.any(AbortSignal)
+    );
     expect(store.loadingTask).toBe(false);
     expect(store.taskId).toBe("task-1");
   });

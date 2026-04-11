@@ -4,7 +4,6 @@ import MarkdownIt from "markdown-it";
 import { useRoute, useRouter } from "vue-router";
 
 import { fetchResearchTask } from "../services/api";
-import { useAuthStore } from "../stores/auth";
 import { useResearchStore } from "../stores/research";
 import type { ResearchTaskDetail } from "../types/research";
 
@@ -16,7 +15,6 @@ const md = new MarkdownIt({
 
 const route = useRoute();
 const router = useRouter();
-const authStore = useAuthStore();
 const researchStore = useResearchStore();
 
 const task = ref<ResearchTaskDetail | null>(null);
@@ -43,7 +41,7 @@ async function loadTask(taskId: string): Promise<void> {
   loading.value = true;
   errorMessage.value = "";
   try {
-    task.value = await fetchResearchTask(authStore.apiBaseUrl, authStore.token, taskId);
+    task.value = await fetchResearchTask(taskId);
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "加载报告失败";
   } finally {

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from typing import Any, Optional
 
@@ -34,6 +35,8 @@ from app.research.schemas import (
 )
 from app.research.streaming import StreamManager
 
+logger = logging.getLogger(__name__)
+
 
 class WorkflowState(dict):
     task_id: str
@@ -67,7 +70,7 @@ class ResearchService:
         self._task_runs: dict[str, asyncio.Task[None]] = {}
 
     async def clarify_questions(self, payload: ClarifyRequest) -> list[str]:
-        llm = create_llm(self.settings, payload.provider, payload.thinking_model, payload.llm_api_key, payload.llm_base_url)
+        llm = create_llm(self.settings, payload.provider, payload.thinking_model)
         messages = [
             HumanMessage(
                 content=CLARIFY_PROMPT.format(query=payload.query, language=payload.language)
@@ -80,12 +83,16 @@ class ResearchService:
         lines = [line.strip("- ").strip() for line in str(raw).splitlines() if line.strip()]
         return lines[:5]
 
-    async def create_task(self, payload: ResearchTaskCreateRequest):
+    async def create_task(self, payload: ResearchTaskCreateRequest, *, owner_id: str):
         if not payload.questions:
             raise ValueError("Clarify questions are required before starting research")
         async with AsyncSessionLocal() as session:
             repo = ResearchRepository(session)
+            active_tasks = await repo.count_active_tasks_for_owner(owner_id)
+            if active_tasks >= self.settings.max_active_tasks_per_owner:
+                raise HTTPException(status_code=429, detail="Too many active tasks")
             task = await repo.create_task(
+                owner_id=owner_id,
                 query=payload.query,
                 clarify_questions=payload.questions,
                 clarify_answers=payload.answers,
@@ -110,10 +117,11 @@ class ResearchService:
         parent_task_id: str,
         follow_up_request: str,
         max_results: Optional[int] = None,
+        owner_id: str,
     ):
         async with AsyncSessionLocal() as session:
             repo = ResearchRepository(session)
-            parent_task = await repo.get_task(parent_task_id)
+            parent_task = await repo.get_task(parent_task_id, owner_id=owner_id)
             if parent_task is None:
                 raise HTTPException(status_code=404, detail="Parent task not found")
             if parent_task.status != "completed":
@@ -132,14 +140,18 @@ class ResearchService:
                 language=parent_task.language,
                 max_results=max_results or parent_task.max_results,
             )
-        return await self.create_task(payload)
+        return await self.create_task(payload, owner_id=owner_id)
 
-    async def run_task_inline(self, payload: ResearchTaskCreateRequest) -> ResearchTaskDetail:
+    async def run_task_inline(self, payload: ResearchTaskCreateRequest, *, owner_id: str) -> ResearchTaskDetail:
         if not payload.questions:
             raise ValueError("Clarify questions are required before starting research")
         async with AsyncSessionLocal() as session:
             repo = ResearchRepository(session)
+            active_tasks = await repo.count_active_tasks_for_owner(owner_id)
+            if active_tasks >= self.settings.max_active_tasks_per_owner:
+                raise HTTPException(status_code=429, detail="Too many active tasks")
             task = await repo.create_task(
+                owner_id=owner_id,
                 query=payload.query,
                 clarify_questions=payload.questions,
                 clarify_answers=payload.answers,
@@ -156,7 +168,7 @@ class ResearchService:
             )
         await self.run_task(task_id=str(task.id), payload=payload)
         async with AsyncSessionLocal() as session:
-            detail = await self.get_task_detail(session, str(task.id))
+            detail = await self.get_task_detail(session, str(task.id), owner_id=owner_id)
         if detail is None:
             raise HTTPException(status_code=500, detail="Task detail unavailable after inline execution")
         return detail
@@ -167,10 +179,11 @@ class ResearchService:
         parent_task_id: str,
         follow_up_request: str,
         max_results: Optional[int] = None,
+        owner_id: str,
     ) -> ResearchTaskDetail:
         async with AsyncSessionLocal() as session:
             repo = ResearchRepository(session)
-            parent_task = await repo.get_task(parent_task_id)
+            parent_task = await repo.get_task(parent_task_id, owner_id=owner_id)
             if parent_task is None:
                 raise HTTPException(status_code=404, detail="Parent task not found")
             if parent_task.status != "completed":
@@ -189,15 +202,17 @@ class ResearchService:
                 language=parent_task.language,
                 max_results=max_results or parent_task.max_results,
             )
-        return await self.run_task_inline(payload)
+        return await self.run_task_inline(payload, owner_id=owner_id)
 
     async def get_task_detail(
         self,
         session: AsyncSession,
         task_id: str,
+        *,
+        owner_id: str,
     ) -> Optional[ResearchTaskDetail]:
         repo = ResearchRepository(session)
-        task = await repo.get_task(task_id)
+        task = await repo.get_task(task_id, owner_id=owner_id)
         if task is None:
             return None
         events = await repo.list_events(task_id)
@@ -233,10 +248,11 @@ class ResearchService:
         self,
         session: AsyncSession,
         *,
+        owner_id: str,
         limit: int = 20,
     ) -> list[ResearchTaskSummary]:
         repo = ResearchRepository(session)
-        tasks = await repo.list_tasks(limit=limit)
+        tasks = await repo.list_tasks_for_owner(owner_id=owner_id, limit=limit)
         return [
             ResearchTaskSummary(
                 id=str(task.id),
@@ -258,10 +274,10 @@ class ResearchService:
             for task in tasks
         ]
 
-    async def delete_task(self, task_id: str) -> ResearchTaskDeleteResponse:
+    async def delete_task(self, task_id: str, *, owner_id: str) -> ResearchTaskDeleteResponse:
         async with AsyncSessionLocal() as session:
             repo = ResearchRepository(session)
-            task = await repo.get_task(task_id)
+            task = await repo.get_task(task_id, owner_id=owner_id)
             if task is None:
                 raise HTTPException(status_code=404, detail="Task not found")
             active_run = self._task_runs.get(task_id)
@@ -287,9 +303,10 @@ class ResearchService:
         session: AsyncSession,
         stream_manager: StreamManager,
         task_id: str,
+        owner_id: str,
     ) -> AsyncIterator[bytes]:
         repo = ResearchRepository(session)
-        task = await repo.get_task(task_id)
+        task = await repo.get_task(task_id, owner_id=owner_id)
         if task is None:
             raise HTTPException(status_code=404, detail="Task not found")
         yield format_sse("infor", {"name": "deep-research", "version": "0.1.0", "task_id": task_id})
@@ -328,11 +345,7 @@ class ResearchService:
                 "provider": payload.provider,
                 "thinking_model": payload.thinking_model,
                 "task_model": payload.task_model,
-                "llm_api_key": payload.llm_api_key,
-                "llm_base_url": payload.llm_base_url,
                 "search_provider": payload.search_provider,
-                "search_api_key": payload.search_api_key,
-                "search_base_url": payload.search_base_url,
                 "max_results": payload.max_results,
                 "brief": "",
                 "previous_report": "",
@@ -374,12 +387,18 @@ class ResearchService:
                     data={"task_id": task_id, "status": "completed"},
                 )
             except Exception as exc:  # noqa: BLE001
-                await repo.update_task(task, status="failed", current_step="failed", error_message=str(exc))
+                logger.exception("Research task %s failed", task_id)
+                await repo.update_task(
+                    task,
+                    status="failed",
+                    current_step="failed",
+                    error_message="Research task failed. Check server logs for details.",
+                )
                 await self._emit_event(
                     repo=repo,
                     task_id=task_id,
                     event="error",
-                    data={"task_id": task_id, "message": str(exc)},
+                    data={"task_id": task_id, "message": "Research task failed. Check server logs."},
                 )
                 await self._emit_event(
                     repo=repo,
@@ -469,8 +488,6 @@ class ResearchService:
             self.settings,
             state["provider"],
             state["thinking_model"],
-            state.get("llm_api_key"),
-            state.get("llm_base_url"),
         )
         answers = self._format_clarify_pairs(state["questions"], state["answers"])
         response = await llm.ainvoke(
@@ -511,8 +528,6 @@ class ResearchService:
             self.settings,
             state["provider"],
             state["thinking_model"],
-            state.get("llm_api_key"),
-            state.get("llm_base_url"),
         )
         response = await llm.ainvoke(
             [HumanMessage(content=REPORT_PLAN_PROMPT.format(brief=state["brief"], language=state["language"]))]
@@ -547,7 +562,7 @@ class ResearchService:
             "start",
             role="supervisor",
         )
-        llm = create_llm(self.settings, state["provider"], state["thinking_model"], state.get("llm_api_key"), state.get("llm_base_url"))
+        llm = create_llm(self.settings, state["provider"], state["thinking_model"])
         messages = [
             HumanMessage(
                 content=SEARCH_QUERY_PROMPT.format(
@@ -593,7 +608,7 @@ class ResearchService:
         return {**state, "search_tasks": search_tasks}
 
     async def _run_search_tasks(self, repo: ResearchRepository, state: dict[str, Any]) -> dict[str, Any]:
-        search_client = create_search_client(self.settings, state["search_provider"], state.get("search_api_key"), state.get("search_base_url"))
+        search_client = create_search_client(self.settings, state["search_provider"])
         concurrency = max(1, int(self.settings.research_concurrency or 1))
         tasks_to_run = list(state["search_tasks"])
         await self._emit_reasoning(
@@ -678,8 +693,6 @@ class ResearchService:
             task_id=state["task_id"],
             provider=state["provider"],
             model=state["task_model"],
-            api_key=state.get("llm_api_key"),
-            base_url=state.get("llm_base_url"),
             query=query,
             research_goal=research_goal,
             docs=docs,
@@ -845,7 +858,7 @@ class ResearchService:
                 total_chars=plan["total_chars"],
             )
             try:
-                llm = create_llm(self.settings, state["provider"], state["task_model"], state.get("llm_api_key"), state.get("llm_base_url"))
+                llm = create_llm(self.settings, state["provider"], state["task_model"])
                 messages = [
                     HumanMessage(
                         content=FINAL_REPORT_PROMPT.format(

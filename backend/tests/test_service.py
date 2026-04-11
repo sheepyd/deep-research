@@ -27,7 +27,7 @@ class FakeRepo:
         self.sources: list[SearchDocument] = []
         self.task = type("Task", (), {"current_step": None})()
 
-    async def get_task(self, _task_id):
+    async def get_task(self, _task_id, owner_id=None):
         return self.task
 
     async def update_task(self, task, **changes):
@@ -65,10 +65,10 @@ class SerialOnlyRepo(FakeRepo):
     async def _leave(self) -> None:
         self._active_calls -= 1
 
-    async def get_task(self, task_id):
+    async def get_task(self, task_id, owner_id=None):
         await self._enter()
         try:
-            return await super().get_task(task_id)
+            return await super().get_task(task_id, owner_id=owner_id)
         finally:
             await self._leave()
 
@@ -92,7 +92,7 @@ class FakeDeleteRepo:
         self.task = type("Task", (), {"id": "task-1", "status": status})()
         self.deleted_task = None
 
-    async def get_task(self, _task_id):
+    async def get_task(self, _task_id, owner_id=None):
         return self.task
 
     async def delete_task(self, task):
@@ -292,7 +292,7 @@ async def test_delete_task_cancels_active_running_worker(monkeypatch: pytest.Mon
     monkeypatch.setattr("app.research.service.ResearchRepository", lambda _session: repo)
     monkeypatch.setattr(service.stream_manager, "publish", fake_publish)
 
-    result = await service.delete_task("task-1")
+    result = await service.delete_task("task-1", owner_id="admin")
 
     assert result.deleted is True
     assert worker.cancelled()
@@ -322,7 +322,7 @@ async def test_delete_task_allows_stale_running_task_without_active_worker(
     monkeypatch.setattr("app.research.service.ResearchRepository", lambda _session: repo)
     monkeypatch.setattr(service.stream_manager, "publish", fake_publish)
 
-    result = await service.delete_task("task-1")
+    result = await service.delete_task("task-1", owner_id="admin")
 
     assert result.deleted is True
     assert repo.deleted_task is repo.task

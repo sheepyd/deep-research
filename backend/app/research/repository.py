@@ -20,6 +20,7 @@ class ResearchRepository:
     async def create_task(
         self,
         *,
+        owner_id: str,
         query: str,
         clarify_questions: list[str],
         clarify_answers: list[str],
@@ -35,6 +36,7 @@ class ResearchRepository:
         max_results: int,
     ) -> ResearchTask:
         task = ResearchTask(
+            owner_id=owner_id,
             query=query,
             clarify_questions=clarify_questions,
             clarify_answers=clarify_answers,
@@ -56,9 +58,16 @@ class ResearchRepository:
         await self.session.refresh(task)
         return task
 
-    async def get_task(self, task_id: Union[str, UUID]) -> Optional[ResearchTask]:
+    async def get_task(
+        self,
+        task_id: Union[str, UUID],
+        owner_id: Optional[str] = None,
+    ) -> Optional[ResearchTask]:
         task_uuid = self._normalize_task_id(task_id)
-        result = await self.session.execute(select(ResearchTask).where(ResearchTask.id == task_uuid))
+        query = select(ResearchTask).where(ResearchTask.id == task_uuid)
+        if owner_id is not None:
+            query = query.where(ResearchTask.owner_id == owner_id)
+        result = await self.session.execute(query)
         return result.scalar_one_or_none()
 
     async def update_task(self, task: ResearchTask, **changes) -> ResearchTask:
@@ -137,6 +146,26 @@ class ResearchRepository:
             select(ResearchTask).order_by(ResearchTask.created_at.desc()).limit(limit)
         )
         return list(result.scalars().all())
+
+    async def list_tasks_for_owner(self, owner_id: str, limit: int = 20) -> list[ResearchTask]:
+        result = await self.session.execute(
+            select(ResearchTask)
+            .where(ResearchTask.owner_id == owner_id)
+            .order_by(ResearchTask.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def count_active_tasks_for_owner(self, owner_id: str) -> int:
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(ResearchTask)
+            .where(
+                ResearchTask.owner_id == owner_id,
+                ResearchTask.status.in_(["queued", "running"]),
+            )
+        )
+        return int(result.scalar_one())
 
     async def delete_task(self, task: ResearchTask) -> None:
         await self.session.delete(task)

@@ -95,7 +95,7 @@
 
 ## 环境变量
 
-如果你要覆盖默认端口、数据库密码或 API Token，再复制：
+如果你要部署或覆盖默认安全配置，先复制：
 
 ```bash
 cp .env.example .env
@@ -105,8 +105,12 @@ cp .env.example .env
 
 | 变量 | 说明 |
 | --- | --- |
+| `WEB_PASSWORD` | Web 工作台登录密码，生产环境必须修改 |
+| `SESSION_SECRET` | Web 会话签名密钥，生产环境必须修改 |
+| `SESSION_COOKIE_SECURE` | HTTPS 部署时建议设为 `true` |
 | `API_BEARER_TOKEN` | 后端 Bearer Token，除 `/health` 外所有 `/api/v1/*` 请求都要带上 |
-| `APP_PORT` | Docker Compose 对外暴露的 HTTP 端口，默认 `80` |
+| `ALLOW_BEARER_AUTH` | 是否允许 Bearer Token 访问 API / MCP；纯 Web 部署可设为 `false` |
+| `APP_PORT` | Docker Compose 对外暴露的 HTTP 端口，默认 `4173` |
 | `POSTGRES_DB` | PostgreSQL 数据库名 |
 | `POSTGRES_USER` | PostgreSQL 用户名 |
 | `POSTGRES_PASSWORD` | PostgreSQL 密码 |
@@ -120,6 +124,7 @@ cp .env.example .env
 | `TAVILY_API_KEY` | Tavily 搜索 Key |
 | `SEARXNG_BASE_URL` | SearxNG 服务地址 |
 | `RESEARCH_CONCURRENCY` | 后端并发搜索任务数，VPS 建议先用 `1-2` |
+| `MAX_ACTIVE_TASKS_PER_OWNER` | 单个登录主体允许同时运行的任务数上限 |
 | `MCP_AI_PROVIDER` | MCP 默认 AI Provider |
 | `MCP_THINKING_MODEL` | MCP 默认 Thinking Model |
 | `MCP_TASK_MODEL` | MCP 默认 Task Model |
@@ -150,7 +155,7 @@ ANTHROPIC_MODEL_LIST=claude-3-5-sonnet-latest,claude-3-7-sonnet-latest
 {
   "mcpServers": {
     "deep-research": {
-      "url": "http://127.0.0.1:8000/api/v1/mcp",
+      "url": "http://127.0.0.1:4173/api/v1/mcp",
       "transportType": "streamable-http",
       "timeout": 600,
       "headers": {
@@ -179,34 +184,36 @@ docker compose up --build
 
 启动后访问：
 
-- 工作台：`http://localhost`
-- API 健康检查：`http://localhost/api/v1/health`
+- 工作台：`http://localhost:4173`
+- API 健康检查：`http://localhost:4173/api/v1/health`
 
-当前 `docker-compose.yml` 已经是可直接部署的单机版本：
+当前 `docker-compose.yml` 的安全边界是：
 
-- 前端会构建成静态文件，并由 `nginx` 提供服务。
-- `/api/*` 会由 `nginx` 反向代理到后端 `FastAPI`。
+- 前端会构建后由一个 Node 静态服务器提供服务，并把 `/api/*` 同源转发到后端。
+- 后端 API 不再直接暴露在宿主机端口。
 - PostgreSQL 只暴露在容器内部网络，不对公网开放。
-- 如果仓库根目录没有 `.env`，Compose 也会使用内置默认值直接启动。
+- Web 登录改为服务端会话，浏览器不再保存 Bearer Token 或上游 API Key。
+- 研究任务按认证主体隔离，同一主体的并发任务数受 `MAX_ACTIVE_TASKS_PER_OWNER` 限制。
+- 生产环境下如果 `WEB_PASSWORD`、`SESSION_SECRET` 或启用 Bearer 时的 `API_BEARER_TOKEN` 仍是默认值，后端会拒绝启动。
 
 最短路径：
 
 ```bash
 git clone <your-repo>
 cd deep-research
+cp .env.example .env
+# 至少修改 WEB_PASSWORD、SESSION_SECRET、POSTGRES_PASSWORD
 docker compose up -d --build
 ```
 
-如果是在 VPS 上，建议至少做这两项覆盖：
+如果是在 VPS 上，建议至少覆盖这些值：
 
-```bash
-cp .env.example .env
-```
-
-然后修改：
-
+- `WEB_PASSWORD`
+- `SESSION_SECRET`
 - `API_BEARER_TOKEN`
 - `POSTGRES_PASSWORD`
+- `SESSION_COOKIE_SECURE=true`（前提是你已经接入 HTTPS）
+- `ALLOW_BEARER_AUTH=false`（如果你不需要 MCP / 外部 API 客户端）
 
 ### 后端本地开发
 
@@ -227,15 +234,17 @@ npm install
 npm run dev
 ```
 
+本地开发时，`Vite` 会把 `/api/*` 代理到 `http://localhost:8000`，因此前端仍然是同源调用方式。
+
 ## 使用方式
 
-1. 在顶部填入 `API Base URL` 和 `Bearer Token`。
+1. 打开工作台并输入部署时配置的 `WEB_PASSWORD` 登录。
 2. 选择 `Provider`、`Thinking Model`、`Task Model`、`Search Provider`、`Language`。
 3. 输入研究主题。
 4. 点击“生成澄清问题”。
 5. 填写补充说明后点击“启动研究”。
 6. 在左侧历史区查看历史任务，在右侧查看进度、推理日志、最终报告预览和引用来源。
-7. 点击“打开独立报告页”或历史中的“报告”进入单独报告视图。
+7. 点击历史中的“报告”进入单独报告视图。
 
 如果页面刷新，前端会尝试恢复最近一次任务并重新连接 SSE。
 

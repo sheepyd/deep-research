@@ -7,7 +7,13 @@ export default defineConfig({
   plugins: [vue(), tailwindcss()],
   server: {
     port: 5173,
-    host: "0.0.0.0"
+    host: "0.0.0.0",
+    proxy: {
+      "/api": {
+        target: "http://localhost:8000",
+        changeOrigin: true
+      }
+    }
   },
   test: {
     environment: "jsdom",

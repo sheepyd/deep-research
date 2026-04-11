@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -9,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, get_research_service
+from app.api.deps import AuthContext, get_db, get_research_service, require_api_auth
 from app.core.config import Settings, get_settings
 from app.core.sse import format_sse
 from app.research.schemas import ClarifyRequest, ResearchTaskCreateRequest
@@ -20,11 +21,13 @@ router = APIRouter(prefix="/mcp")
 SERVER_INFO = {"name": "deep-research", "version": "0.3.0"}
 PROTOCOL_VERSION = "2025-03-26"
 POST_ENDPOINT_PATH = "/api/v1/mcp/sse/messages"
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class McpSession:
     session_id: str
+    owner_id: str
     queue: asyncio.Queue[dict[str, Any]] = field(default_factory=asyncio.Queue)
 
 
@@ -33,8 +36,8 @@ class McpSessionManager:
         self._sessions: dict[str, McpSession] = {}
         self._lock = asyncio.Lock()
 
-    async def create(self) -> McpSession:
-        session = McpSession(session_id=str(uuid4()))
+    async def create(self, owner_id: str) -> McpSession:
+        session = McpSession(session_id=str(uuid4()), owner_id=owner_id)
         async with self._lock:
             self._sessions[session.session_id] = session
         return session
@@ -189,6 +192,7 @@ async def _build_run_payload(
 async def _handle_mcp_request(
     body: dict[str, Any],
     *,
+    auth: AuthContext,
     service: ResearchService,
     session: AsyncSession,
     settings: Settings,
@@ -230,7 +234,7 @@ async def _handle_mcp_request(
     try:
         if tool_name == "deep-research.run":
             payload = await _build_run_payload(arguments, settings=settings, service=service)
-            detail = await service.run_task_inline(payload)
+            detail = await service.run_task_inline(payload, owner_id=auth.subject)
             return _jsonrpc_payload(request_id=request_id, result=_tool_text(detail.model_dump(mode="json")))
 
         if tool_name == "deep-research.follow-up":
@@ -238,18 +242,23 @@ async def _handle_mcp_request(
                 parent_task_id=_require_argument(arguments, "task_id"),
                 follow_up_request=_require_argument(arguments, "follow_up_request"),
                 max_results=int(arguments["max_results"]) if arguments.get("max_results") is not None else None,
+                owner_id=auth.subject,
             )
             return _jsonrpc_payload(request_id=request_id, result=_tool_text(detail.model_dump(mode="json")))
 
         if tool_name == "deep-research.get-task":
-            detail = await service.get_task_detail(session, _require_argument(arguments, "task_id"))
+            detail = await service.get_task_detail(
+                session,
+                _require_argument(arguments, "task_id"),
+                owner_id=auth.subject,
+            )
             if detail is None:
                 return _jsonrpc_payload(request_id=request_id, error={"code": -32004, "message": "Task not found"})
             return _jsonrpc_payload(request_id=request_id, result=_tool_text(detail.model_dump(mode="json")))
 
         if tool_name == "deep-research.list-tasks":
-            limit = int(arguments.get("limit") or 20)
-            tasks = await service.list_task_summaries(session, limit=limit)
+            limit = max(1, min(int(arguments.get("limit") or 20), 100))
+            tasks = await service.list_task_summaries(session, owner_id=auth.subject, limit=limit)
             return _jsonrpc_payload(
                 request_id=request_id,
                 result=_tool_text([task.model_dump(mode="json") for task in tasks]),
@@ -270,8 +279,12 @@ async def _handle_mcp_request(
             return _jsonrpc_payload(request_id=request_id, result=_tool_text({"questions": questions}))
     except HTTPException as exc:
         return _jsonrpc_payload(request_id=request_id, error={"code": -32000, "message": exc.detail})
-    except Exception as exc:  # noqa: BLE001
-        return _jsonrpc_payload(request_id=request_id, error={"code": -32000, "message": str(exc)})
+    except Exception:  # noqa: BLE001
+        logger.exception("Unhandled MCP request failure for %s", auth.subject)
+        return _jsonrpc_payload(
+            request_id=request_id,
+            error={"code": -32000, "message": "Internal server error"},
+        )
 
     return _jsonrpc_payload(request_id=request_id, error={"code": -32602, "message": f"Unknown tool: {tool_name}"})
 
@@ -304,18 +317,22 @@ async def _sse_session_stream(session_id: str, settings: Settings) -> AsyncItera
 @router.post("")
 async def handle_streamable_http_mcp(
     request: Request,
+    auth: AuthContext = Depends(require_api_auth),
     service: ResearchService = Depends(get_research_service),
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> JSONResponse:
     body = await request.json()
-    payload = await _handle_mcp_request(body, service=service, session=session, settings=settings)
+    payload = await _handle_mcp_request(body, auth=auth, service=service, session=session, settings=settings)
     return JSONResponse(payload)
 
 
 @router.get("/sse")
-async def open_sse_mcp(settings: Settings = Depends(get_settings)) -> StreamingResponse:
-    session = await session_manager.create()
+async def open_sse_mcp(
+    auth: AuthContext = Depends(require_api_auth),
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    session = await session_manager.create(auth.subject)
     headers = {
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
@@ -328,20 +345,27 @@ async def open_sse_mcp(settings: Settings = Depends(get_settings)) -> StreamingR
 async def handle_sse_mcp_message(
     request: Request,
     session_id: str = Query(..., alias="sessionId"),
+    auth: AuthContext = Depends(require_api_auth),
     service: ResearchService = Depends(get_research_service),
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> Response:
     mcp_session = await session_manager.get(session_id)
-    if mcp_session is None:
+    if mcp_session is None or mcp_session.owner_id != auth.subject:
         raise HTTPException(status_code=404, detail="MCP session not found")
     body = await request.json()
-    payload = await _handle_mcp_request(body, service=service, session=session, settings=settings)
+    payload = await _handle_mcp_request(body, auth=auth, service=service, session=session, settings=settings)
     await mcp_session.queue.put(payload)
     return Response(status_code=202)
 
 
 @router.delete("/sse")
-async def close_sse_mcp(session_id: str = Query(..., alias="sessionId")) -> Response:
+async def close_sse_mcp(
+    session_id: str = Query(..., alias="sessionId"),
+    auth: AuthContext = Depends(require_api_auth),
+) -> Response:
+    mcp_session = await session_manager.get(session_id)
+    if mcp_session is None or mcp_session.owner_id != auth.subject:
+        raise HTTPException(status_code=404, detail="MCP session not found")
     await session_manager.close(session_id)
     return Response(status_code=204)

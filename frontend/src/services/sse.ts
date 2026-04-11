@@ -2,12 +2,11 @@ import type { SseEvent } from "../types/research";
 
 export async function openTaskStream(
   url: string,
-  token: string,
   onEvent: (event: SseEvent) => void,
   signal?: AbortSignal
 ): Promise<void> {
   const response = await fetch(url, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    credentials: "same-origin",
     signal
   });
   if (!response.ok || !response.body) {
@@ -43,4 +42,3 @@ export async function openTaskStream(
     }
   }
 }
-

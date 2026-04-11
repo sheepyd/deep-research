@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import MarkdownIt from "markdown-it";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { storeToRefs } from "pinia";
 import { useRouter } from "vue-router";
-import { Github, History, Settings, Trash2 } from "lucide-vue-next";
+import { Github, History, LogOut, Settings, Trash2 } from "lucide-vue-next";
 
 import { fetchProviders } from "../services/api";
 import { useAuthStore } from "../stores/auth";
 import { useHistoryStore } from "../stores/history";
 import { useResearchStore } from "../stores/research";
 import { useSettingsStore } from "../stores/settings";
+import WorkflowProgress from "../components/WorkflowProgress.vue";
 
 const md = new MarkdownIt({
   html: false,
@@ -24,7 +25,6 @@ const historyStore = useHistoryStore();
 const researchStore = useResearchStore();
 const settingsStore = useSettingsStore();
 
-const { apiBaseUrl, token } = storeToRefs(authStore);
 const { tasks, loading: loadingHistory, deletingTaskIds } = storeToRefs(historyStore);
 const {
   query,
@@ -50,6 +50,24 @@ const canStartResearch = computed(
   () => Boolean(query.value.trim() && clarifyQuestions.value.length && researchStore.lastClarifiedQuery === query.value)
 );
 
+const activeStage = computed(() => {
+  if (taskId.value) {
+    if (status.value === "completed" || status.value === "failed") return "done";
+    return "progress";
+  }
+  if (clarifyQuestions.value.length > 0) return "clarify";
+  return "workbench";
+});
+
+watch(
+  () => status.value,
+  (newStatus) => {
+    if (newStatus === "completed" && taskId.value) {
+      router.push({ name: "report", params: { taskId: taskId.value } });
+    }
+  }
+);
+
 const showHistory = ref(false);
 const showSettings = ref(false);
 
@@ -73,6 +91,10 @@ async function openTaskInWorkspace(id: string): Promise<void> {
   await researchStore.hydrateTask(id);
   if (!["completed", "failed"].includes(researchStore.status)) {
     void researchStore.connectStream(id);
+  }
+  showHistory.value = false;
+  if (researchStore.status === "completed") {
+    router.push({ name: "report", params: { taskId: id } });
   }
 }
 
@@ -103,11 +125,19 @@ async function deleteTaskFromHistory(id: string): Promise<void> {
   }
 }
 
+async function signOut(): Promise<void> {
+  try {
+    await authStore.logout();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "退出登录失败");
+  }
+}
+
 onMounted(async () => {
   await historyStore.loadTasks();
 
   try {
-    const providers = await fetchProviders(authStore.apiBaseUrl, authStore.token);
+    const providers = await fetchProviders();
     settingsStore.setProviders(providers);
   } catch (error) {
     researchStore.errorMessage = error instanceof Error ? error.message : "加载 provider 失败";
@@ -116,89 +146,63 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="max-w-screen-lg mx-auto px-4 relative z-10">
+  <div class="max-w-screen-lg mx-auto px-4 relative z-10 pb-16">
     <header class="flex justify-between items-center my-6 max-sm:my-4 print:hidden">
-      <h1 class="text-left text-xl font-semibold font-heading">
+      <h1 class="text-left text-xl font-semibold font-heading text-foreground">
         Deep Research
       </h1>
       <div class="flex">
         <a href="https://github.com/sheepyd/deep-research.git" target="_blank" rel="noopener noreferrer">
-          <el-button class="h-8 w-8 !p-1" title="开源代码" text>
+          <el-button class="h-8 w-8 !p-1 text-foreground" title="开源代码" text>
             <Github class="h-5 w-5" />
           </el-button>
         </a>
-        <el-button class="h-8 w-8 !p-1" text title="历史记录" @click="showHistory = true">
+        <el-button class="h-8 w-8 !p-1 text-foreground" text title="历史记录" @click="showHistory = true">
           <History class="h-5 w-5" />
         </el-button>
-        <el-button class="h-8 w-8 !p-1" text title="设置" @click="showSettings = true">
+        <el-button class="h-8 w-8 !p-1 text-foreground" text title="设置" @click="showSettings = true">
           <Settings class="h-5 w-5" />
+        </el-button>
+        <el-button class="h-8 w-8 !p-1 text-foreground" text title="退出登录" @click="signOut">
+          <LogOut class="h-5 w-5" />
         </el-button>
       </div>
     </header>
 
-    <main class="flex flex-col gap-6 items-start">
-      <section class="flex flex-col gap-6 w-full">
+    <main class="flex flex-col gap-6 items-start w-full">
+      <!-- Stage: Workbench -->
+      <section v-if="activeStage === 'workbench'" class="flex flex-col gap-6 w-full fade-in">
         <el-card>
           <template #header>
             <div class="flex justify-between items-start">
               <div>
                 <p class="text-[10px] font-display uppercase tracking-[0.3em] text-accent mb-1">Volume I</p>
-                <h2 class="text-3xl font-heading text-foreground">研究工作台</h2>
+                <h2 class="text-3xl font-heading text-foreground drop-cap">研究工作台</h2>
               </div>
-              <span class="px-3 py-1 bg-background border border-border rounded-full text-xs font-display uppercase tracking-widest text-accent">
-                {{ status }} / {{ researchStore.currentStep || "idle" }}
-              </span>
             </div>
           </template>
 
           <div class="flex flex-col gap-6">
+            <p class="text-sm font-body text-mutedForeground">
+              开启一项新的深度研究，系统将通过智能分析拆解您的目标，提供详尽的报告与论证。
+            </p>
             <el-input
               type="textarea"
               :rows="7"
               :model-value="query"
               placeholder="输入你的研究主题、目标、背景和输出要求..."
               @input="researchStore.setQuery(String($event))"
+              class="bg-backgroundAlt border-border"
             />
-            <div class="flex flex-wrap gap-4">
-              <el-button type="primary" :loading="loadingClarify" @click="researchStore.requestClarify()">
-                生成澄清问题
-              </el-button>
-              <el-button
-                :loading="loadingTask"
-                :disabled="!canStartResearch"
-                @click="researchStore.startResearch()"
+            <div class="flex justify-end">
+              <el-button 
+                class="min-w-[140px]" 
+                :loading="loadingClarify" 
+                @click="researchStore.requestClarify()"
+                :disabled="!query.trim()"
               >
-                启动研究
+                <span class="engraved-text">生成澄清问题</span>
               </el-button>
-            </div>
-          </div>
-        </el-card>
-
-        <el-card v-if="clarifyQuestions.length">
-          <template #header>
-            <div class="flex justify-between items-start">
-              <div>
-                <p class="text-[10px] font-display uppercase tracking-[0.3em] text-accent mb-1">Volume II</p>
-                <h2 class="text-3xl font-heading text-foreground">澄清问题</h2>
-              </div>
-            </div>
-          </template>
-
-          <div class="flex flex-col gap-6">
-            <div
-              v-for="(question, index) in clarifyQuestions"
-              :key="index"
-              class="flex flex-col gap-2"
-            >
-              <p class="text-lg font-heading text-foreground">
-                <span class="font-display text-accent mr-2">{{ index + 1 }}.</span> {{ question }}
-              </p>
-              <el-input
-                type="textarea"
-                :rows="3"
-                :model-value="answers[index]"
-                @input="researchStore.updateAnswer(index, String($event))"
-              />
             </div>
           </div>
         </el-card>
@@ -213,36 +217,81 @@ onMounted(async () => {
         />
       </section>
 
-      <section class="flex flex-col gap-6 w-full">
+      <!-- Stage: Clarify -->
+      <section v-if="activeStage === 'clarify'" class="flex flex-col gap-6 w-full fade-in">
         <el-card>
           <template #header>
             <div class="flex justify-between items-start">
               <div>
-                <p class="text-[10px] font-display uppercase tracking-[0.3em] text-accent mb-1">Volume III</p>
-                <h2 class="text-3xl font-heading text-foreground">执行进度</h2>
+                <p class="text-[10px] font-display uppercase tracking-[0.3em] text-accent mb-1">Volume II</p>
+                <h2 class="text-3xl font-heading text-foreground">澄清问题</h2>
               </div>
+              <el-button @click="researchStore.clarifyQuestions = []" text size="small">
+                返回修改主题
+              </el-button>
             </div>
           </template>
 
-          <div class="flex flex-col gap-4">
+          <div class="flex flex-col gap-6">
+            <div class="p-4 bg-backgroundAlt border border-border rounded opacity-80">
+              <p class="text-xs font-display uppercase tracking-widest text-mutedForeground mb-1">原始主题</p>
+              <p class="text-base font-body text-foreground">{{ query }}</p>
+            </div>
+            
+            <div class="ornate-divider my-2 w-full"></div>
+            
             <div
-              v-for="(item, index) in progressHistory"
-              :key="`${item.step}-${item.status}-${index}`"
-              class="flex gap-4 items-start"
+              v-for="(question, index) in clarifyQuestions"
+              :key="index"
+              class="flex flex-col gap-3"
             >
-              <div class="w-3 h-3 mt-1.5 rounded-full bg-accent shadow-[0_0_0_2px_rgba(201,169,98,0.2)] shrink-0" />
-              <div class="flex flex-col gap-1 p-3 bg-background border border-border rounded w-full">
-                <strong class="text-base font-heading text-foreground">{{ item.step }}</strong>
-                <span class="text-sm font-body text-mutedForeground">
-                  {{ item.role ? `${item.role} · ` : "" }}{{ item.status }}
-                  <template v-if="item.attempt"> · attempt {{ item.attempt }}</template>
-                </span>
-                <small class="text-xs italic text-mutedForeground" v-if="item.name">{{ item.name }}</small>
-                <small class="text-xs text-accent" v-if="item.compressedContext">compressed context</small>
-              </div>
+              <p class="text-lg font-heading text-foreground">
+                <span class="font-display text-accent mr-2">{{ index + 1 }}.</span> {{ question }}
+              </p>
+              <el-input
+                type="textarea"
+                :rows="3"
+                :model-value="answers[index]"
+                placeholder="您的回答将指导研究的方向..."
+                @input="researchStore.updateAnswer(index, String($event))"
+              />
+            </div>
+            
+            <div class="flex justify-end pt-4 border-t border-border mt-2">
+              <el-button
+                class="min-w-[140px] bg-[linear-gradient(180deg,#D4B872_0%,#C9A962_50%,#B8953F_100%)] text-[#1C1714] border-none hover:brightness-110 shadow-[inset_0_1px_0_rgba(255,255,255,0.2),inset_0_-1px_0_rgba(0,0,0,0.2),0_2px_8px_rgba(0,0,0,0.3)] transition-all"
+                :loading="loadingTask"
+                :disabled="!canStartResearch"
+                @click="researchStore.startResearch()"
+              >
+                <span class="font-display uppercase tracking-[0.15em] text-xs font-bold text-shadow-[1px_1px_1px_rgba(0,0,0,0.4),-1px_-1px_1px_rgba(255,255,255,0.1)]">启动深度研究</span>
+              </el-button>
             </div>
           </div>
         </el-card>
+
+        <el-alert
+          v-if="errorMessage"
+          :title="errorMessage"
+          type="error"
+          show-icon
+          :closable="false"
+          class="bg-accentSecondary/10 border border-accentSecondary text-foreground"
+        />
+      </section>
+
+      <!-- Stage: Progress & Reasoning (Volume III & IV) -->
+      <section v-if="activeStage === 'progress' || activeStage === 'done'" class="flex flex-col gap-6 w-full fade-in">
+        <WorkflowProgress />
+
+        <el-alert
+          v-if="errorMessage"
+          :title="errorMessage"
+          type="error"
+          show-icon
+          :closable="false"
+          class="bg-accentSecondary/10 border border-accentSecondary text-foreground"
+        />
 
         <el-card>
           <template #header>
@@ -251,52 +300,31 @@ onMounted(async () => {
                 <p class="text-[10px] font-display uppercase tracking-[0.3em] text-accent mb-1">Volume IV</p>
                 <h2 class="text-3xl font-heading text-foreground">研究计划与推理</h2>
               </div>
+              <span class="px-3 py-1 bg-background border border-border rounded-full text-xs font-display uppercase tracking-widest text-accent">
+                {{ status }} / {{ researchStore.currentStep || "idle" }}
+              </span>
             </div>
           </template>
 
-          <div class="markdown-body" v-html="renderedPlan" />
-          <div class="ornate-divider my-6"></div>
-          <pre class="bg-background border border-border p-4 rounded font-mono text-sm text-mutedForeground overflow-x-auto whitespace-pre-wrap">{{ reasoningLog.join("\n\n") }}</pre>
-        </el-card>
+          <div class="flex flex-col gap-6">
+            <div>
+              <h3 class="text-lg font-heading text-foreground mb-4 border-b border-border pb-2">研究计划</h3>
+              <div v-if="renderedPlan" class="markdown-body text-sm" v-html="renderedPlan" />
+              <div v-else class="italic text-mutedForeground text-sm p-4 bg-backgroundAlt rounded border border-border">正在制定研究计划，请稍候...</div>
+            </div>
 
-        <el-card>
-          <template #header>
-            <div class="flex justify-between items-start">
-              <div>
-                <p class="text-[10px] font-display uppercase tracking-[0.3em] text-accent mb-1">Volume V</p>
-                <h2 class="text-3xl font-heading text-foreground">最终报告预览</h2>
+            <div class="ornate-divider my-2 w-full"></div>
+
+            <details class="group bg-background border border-border rounded" :open="!renderedPlan">
+              <summary class="p-3 cursor-pointer font-heading text-foreground hover:text-accent transition-colors flex justify-between items-center bg-backgroundAlt border-b border-transparent group-open:border-border">
+                <span class="font-medium text-base">详细执行记录与推理</span>
+                <span class="text-xs font-body text-mutedForeground opacity-70">点击展开/折叠</span>
+              </summary>
+              <div class="p-4 bg-background">
+                <pre v-if="reasoningLog.length || progressHistory.length" class="font-mono text-xs text-mutedForeground overflow-x-auto whitespace-pre-wrap max-h-96 overflow-y-auto leading-relaxed scrollbar-thin">{{ reasoningLog.join("\n\n") }}</pre>
+                <div v-else class="italic text-mutedForeground text-sm text-center">暂无执行记录...</div>
               </div>
-            </div>
-          </template>
-
-          <div class="markdown-body max-h-[500px] overflow-y-auto pr-2" v-html="renderedReport" />
-        </el-card>
-
-        <el-card>
-          <template #header>
-            <div class="flex justify-between items-start">
-              <div>
-                <p class="text-[10px] font-display uppercase tracking-[0.3em] text-accent mb-1">Volume VI</p>
-                <h2 class="text-3xl font-heading text-foreground">引用来源</h2>
-              </div>
-            </div>
-          </template>
-
-          <div v-if="sources.length" class="flex flex-col gap-3">
-            <a
-              v-for="source in sources"
-              :key="source.id"
-              :href="source.url"
-              target="_blank"
-              rel="noreferrer"
-              class="flex flex-col gap-1 p-3 bg-background border border-border rounded transition-colors hover:border-accent group"
-            >
-              <strong class="text-base font-heading text-foreground group-hover:text-accent transition-colors line-clamp-1">{{ source.title || source.url }}</strong>
-              <span class="text-xs font-body text-mutedForeground break-all line-clamp-2">{{ source.url }}</span>
-            </a>
-          </div>
-          <div v-else class="text-sm font-body italic text-mutedForeground">
-            研究完成后会在这里展示引用来源。
+            </details>
           </div>
         </el-card>
       </section>
@@ -313,14 +341,6 @@ onMounted(async () => {
                 <el-option v-for="(provider, key) in settingsStore.providers.llm_providers" :key="key" :label="provider.label" :value="key" />
               </el-select>
               <p class="text-xs text-mutedForeground">AI 服务提供商。</p>
-            </div>
-            <div class="flex flex-col gap-1">
-              <label class="text-sm font-semibold text-foreground">API Key</label>
-              <el-input v-model="settingsStore.llmApiKey" placeholder="请输入模型 API 密钥 (留空使用后端默认配置)" show-password @change="settingsStore.persist()" />
-            </div>
-            <div class="flex flex-col gap-1">
-              <label class="text-sm font-semibold text-foreground">API Base URL</label>
-              <el-input v-model="settingsStore.llmBaseUrl" placeholder="请输入 API 基础 URL (留空使用后端默认配置)" @change="settingsStore.persist()" />
             </div>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div class="flex flex-col gap-1">
@@ -351,14 +371,6 @@ onMounted(async () => {
               <p class="text-xs text-mutedForeground">搜索服务提供商。</p>
             </div>
             <div class="flex flex-col gap-1">
-              <label class="text-sm font-semibold text-foreground">Search API Key</label>
-              <el-input v-model="settingsStore.searchApiKey" placeholder="请输入搜索 API 密钥 (留空使用后端默认配置)" show-password @change="settingsStore.persist()" />
-            </div>
-            <div class="flex flex-col gap-1">
-              <label class="text-sm font-semibold text-foreground">Search Base URL</label>
-              <el-input v-model="settingsStore.searchBaseUrl" placeholder="请输入搜索 API 基础 URL (留空使用后端默认配置)" @change="settingsStore.persist()" />
-            </div>
-            <div class="flex flex-col gap-1">
               <label class="text-sm font-semibold text-foreground">Max Results</label>
               <el-input-number v-model="settingsStore.maxResults" :min="1" :max="10" @change="settingsStore.persist()" class="w-full" />
               <p class="text-xs text-mutedForeground">单次搜索的最大结果数量。</p>
@@ -377,14 +389,10 @@ onMounted(async () => {
               <p class="text-xs text-mutedForeground">提示词和报告生成的首选语言。</p>
             </div>
             <div class="flex flex-col gap-1 mt-4 pt-4 border-t border-border">
-              <label class="text-sm font-semibold text-foreground">Backend API Base URL</label>
-              <el-input v-model="apiBaseUrl" placeholder="后端 API 基础 URL" @change="authStore.setApiBaseUrl(apiBaseUrl)" />
-              <p class="text-xs text-mutedForeground">Python 后端服务的地址。</p>
-            </div>
-            <div class="flex flex-col gap-1">
-              <label class="text-sm font-semibold text-foreground">Backend Bearer Token</label>
-              <el-input v-model="token" placeholder="后端 Bearer Token" show-password @change="authStore.setToken(token)" />
-              <p class="text-xs text-mutedForeground">后端 API 鉴权令牌。</p>
+              <label class="text-sm font-semibold text-foreground">安全说明</label>
+              <p class="text-sm text-mutedForeground">
+                模型密钥、搜索密钥、网关地址和登录态都由服务端管理，不再保存在浏览器本地。
+              </p>
             </div>
           </div>
         </el-tab-pane>
@@ -452,10 +460,30 @@ onMounted(async () => {
   border-bottom: 1px solid var(--color-border);
   margin-right: 0;
 }
-:deep(.el-dialog) {
-  /* Using standard corner-flourish approach */
-}
 :deep(.el-drawer) {
   background-color: var(--color-backgroundAlt);
 }
+.fade-in {
+  animation: fadeIn 0.5s ease-out;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: var(--color-backgroundAlt);
+  border-radius: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: var(--color-mutedForeground);
+}
 </style>
+

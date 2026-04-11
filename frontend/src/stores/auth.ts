@@ -1,41 +1,59 @@
 import { defineStore } from "pinia";
 
-const AUTH_KEY = "deep-research-auth";
+import { fetchSession, loginWithPassword, logoutSession } from "../services/api";
 
-interface AuthState {
-  apiBaseUrl: string;
-  token: string;
+export interface AuthState {
+  authenticated: boolean;
+  subject: string;
+  authMode: string;
+  checkingSession: boolean;
 }
 
-function defaultApiBaseUrl(): string {
-  if (typeof window !== "undefined" && window.location?.origin) {
-    return window.location.origin;
-  }
-  return "http://localhost:8000";
-}
-
-function loadState(): AuthState {
-  try {
-    const raw = localStorage.getItem(AUTH_KEY);
-    if (!raw) {
-      return { apiBaseUrl: defaultApiBaseUrl(), token: "change-me" };
-    }
-    return JSON.parse(raw) as AuthState;
-  } catch {
-    return { apiBaseUrl: defaultApiBaseUrl(), token: "change-me" };
-  }
+function defaultState(): AuthState {
+  return {
+    authenticated: false,
+    subject: "",
+    authMode: "",
+    checkingSession: true
+  };
 }
 
 export const useAuthStore = defineStore("auth", {
-  state: (): AuthState => loadState(),
+  state: (): AuthState => defaultState(),
   actions: {
-    setApiBaseUrl(value: string) {
-      this.apiBaseUrl = value;
-      localStorage.setItem(AUTH_KEY, JSON.stringify({ apiBaseUrl: this.apiBaseUrl, token: this.token }));
+    applyAnonymousState() {
+      this.authenticated = false;
+      this.subject = "";
+      this.authMode = "";
     },
-    setToken(value: string) {
-      this.token = value;
-      localStorage.setItem(AUTH_KEY, JSON.stringify({ apiBaseUrl: this.apiBaseUrl, token: this.token }));
+    applySessionState(payload: { authenticated: boolean; subject?: string | null; auth_mode?: string | null }) {
+      this.authenticated = payload.authenticated;
+      this.subject = payload.subject ?? "";
+      this.authMode = payload.auth_mode ?? "";
+    },
+    async restoreSession() {
+      this.checkingSession = true;
+      try {
+        this.applySessionState(await fetchSession());
+      } finally {
+        this.checkingSession = false;
+      }
+    },
+    async login(password: string) {
+      this.checkingSession = true;
+      try {
+        this.applySessionState(await loginWithPassword(password));
+      } finally {
+        this.checkingSession = false;
+      }
+    },
+    async logout() {
+      this.checkingSession = true;
+      try {
+        this.applySessionState(await logoutSession());
+      } finally {
+        this.checkingSession = false;
+      }
     }
   }
 });

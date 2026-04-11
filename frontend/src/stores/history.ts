@@ -2,7 +2,6 @@ import { defineStore } from "pinia";
 
 import { deleteResearchTask, fetchResearchTasks } from "../services/api";
 import type { ResearchTaskSummary } from "../types/research";
-import { useAuthStore } from "./auth";
 
 interface HistoryState {
   tasks: ResearchTaskSummary[];
@@ -20,11 +19,10 @@ export const useHistoryStore = defineStore("history", {
   }),
   actions: {
     async loadTasks(limit = 20) {
-      const auth = useAuthStore();
       this.loading = true;
       this.errorMessage = "";
       try {
-        this.tasks = await fetchResearchTasks(auth.apiBaseUrl, auth.token, limit);
+        this.tasks = await fetchResearchTasks(limit);
       } catch (error) {
         this.errorMessage = error instanceof Error ? error.message : "加载历史任务失败";
       } finally {
@@ -32,14 +30,13 @@ export const useHistoryStore = defineStore("history", {
       }
     },
     async deleteTask(taskId: string) {
-      const auth = useAuthStore();
       this.errorMessage = "";
       if (this.deletingTaskIds.includes(taskId)) {
         return;
       }
       this.deletingTaskIds.push(taskId);
       try {
-        await deleteResearchTask(auth.apiBaseUrl, auth.token, taskId);
+        await deleteResearchTask(taskId);
         this.tasks = this.tasks.filter((task) => task.id !== taskId);
       } catch (error) {
         this.errorMessage = error instanceof Error ? error.message : "删除历史任务失败";

@@ -2,7 +2,6 @@ import { defineStore } from "pinia";
 
 import { clarifyResearch, createFollowUpResearchTask, createResearchTask, fetchResearchTask } from "../services/api";
 import { openTaskStream } from "../services/sse";
-import { useAuthStore } from "./auth";
 import { useHistoryStore } from "./history";
 import { useSettingsStore } from "./settings";
 import type { EventRecord, ResearchTaskDetail, SseEvent } from "../types/research";
@@ -100,17 +99,14 @@ export const useResearchStore = defineStore("research", {
       this.errorMessage = "";
     },
     async requestClarify() {
-      const auth = useAuthStore();
       const settings = useSettingsStore();
       this.loadingClarify = true;
       this.errorMessage = "";
       try {
-        const result = await clarifyResearch(auth.apiBaseUrl, auth.token, {
+        const result = await clarifyResearch({
           query: this.query,
           provider: settings.provider,
           thinking_model: settings.thinkingModel,
-          llm_api_key: settings.llmApiKey || undefined,
-          llm_base_url: settings.llmBaseUrl || undefined,
           language: settings.language
         });
         this.clarifyQuestions = result.questions;
@@ -126,7 +122,6 @@ export const useResearchStore = defineStore("research", {
       }
     },
     async startResearch() {
-      const auth = useAuthStore();
       const history = useHistoryStore();
       const settings = useSettingsStore();
       if (!this.clarifyQuestions.length || this.lastClarifiedQuery !== this.query) {
@@ -136,18 +131,14 @@ export const useResearchStore = defineStore("research", {
       this.loadingTask = true;
       this.resetTask();
       try {
-        const result = await createResearchTask(auth.apiBaseUrl, auth.token, {
+        const result = await createResearchTask({
           query: this.query,
           questions: this.clarifyQuestions,
           answers: this.answers.filter((item) => item.trim().length > 0),
           provider: settings.provider,
           thinking_model: settings.thinkingModel,
           task_model: settings.taskModel,
-          llm_api_key: settings.llmApiKey || undefined,
-          llm_base_url: settings.llmBaseUrl || undefined,
           search_provider: settings.searchProvider,
-          search_api_key: settings.searchApiKey || undefined,
-          search_base_url: settings.searchBaseUrl || undefined,
           language: settings.language,
           max_results: settings.maxResults
         });
@@ -163,14 +154,13 @@ export const useResearchStore = defineStore("research", {
       }
     },
     async startFollowUpResearch(parentTaskId: string, followUpRequest: string) {
-      const auth = useAuthStore();
       const history = useHistoryStore();
       const settings = useSettingsStore();
       this.loadingTask = true;
       this.errorMessage = "";
       this.resetTask();
       try {
-        const result = await createFollowUpResearchTask(auth.apiBaseUrl, auth.token, parentTaskId, {
+        const result = await createFollowUpResearchTask(parentTaskId, {
           follow_up_request: followUpRequest,
           max_results: settings.maxResults
         });
@@ -186,8 +176,7 @@ export const useResearchStore = defineStore("research", {
       }
     },
     async hydrateTask(taskId: string) {
-      const auth = useAuthStore();
-      const detail = await fetchResearchTask(auth.apiBaseUrl, auth.token, taskId);
+      const detail = await fetchResearchTask(taskId);
       this.taskId = detail.id;
       this.status = detail.status;
       this.query = detail.query;
@@ -254,14 +243,12 @@ export const useResearchStore = defineStore("research", {
       }
     },
     async connectStream(taskId: string) {
-      const auth = useAuthStore();
       activeStreamController?.abort();
       const controller = new AbortController();
       activeStreamController = controller;
       try {
         await openTaskStream(
-          `${auth.apiBaseUrl}/api/v1/research/tasks/${taskId}/stream`,
-          auth.token,
+          `/api/v1/research/tasks/${taskId}/stream`,
           (event) => {
             this.applySseEvent(event);
           },

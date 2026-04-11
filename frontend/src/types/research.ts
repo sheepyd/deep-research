@@ -3,8 +3,6 @@ export interface ClarifyRequest {
   provider: string;
   thinking_model: string;
   language: string;
-  llm_api_key?: string;
-  llm_base_url?: string;
 }
 
 export interface ResearchTaskCreateRequest {
@@ -17,11 +15,7 @@ export interface ResearchTaskCreateRequest {
   provider: string;
   thinking_model: string;
   task_model: string;
-  llm_api_key?: string;
-  llm_base_url?: string;
   search_provider: string;
-  search_api_key?: string;
-  search_base_url?: string;
   language: string;
   max_results: number;
 }

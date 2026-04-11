@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 
-import { useAuthStore } from "../../src/stores/auth";
 import { useHistoryStore } from "../../src/stores/history";
 
 vi.mock("../../src/services/api", () => ({
@@ -19,11 +18,8 @@ describe("history store", () => {
   });
 
   it("removes a deleted task from history", async () => {
-    const authStore = useAuthStore();
     const store = useHistoryStore();
 
-    authStore.apiBaseUrl = "http://localhost:8000";
-    authStore.token = "change-me";
     store.tasks = [
       {
         id: "task-1",
@@ -46,7 +42,7 @@ describe("history store", () => {
 
     await store.deleteTask("task-1");
 
-    expect(deleteResearchTask).toHaveBeenCalledWith("http://localhost:8000", "change-me", "task-1");
+    expect(deleteResearchTask).toHaveBeenCalledWith("task-1");
     expect(store.tasks).toEqual([]);
     expect(store.deletingTaskIds).toEqual([]);
   });
