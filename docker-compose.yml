@@ -27,6 +27,7 @@ services:
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
       API_BEARER_TOKEN: ${API_BEARER_TOKEN:-change-me}
       ALLOW_BEARER_AUTH: ${ALLOW_BEARER_AUTH:-true}
+      ALLOW_GUEST_ACCESS: ${ALLOW_GUEST_ACCESS:-false}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-deep_research}:${POSTGRES_PASSWORD:-deep_research}@postgres:5432/${POSTGRES_DB:-deep_research}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}

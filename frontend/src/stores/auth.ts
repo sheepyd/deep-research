@@ -1,12 +1,13 @@
 import { defineStore } from "pinia";
 
-import { fetchSession, loginWithPassword, logoutSession } from "../services/api";
+import { fetchSession, loginAsGuest, loginWithPassword, logoutSession } from "../services/api";
 
 export interface AuthState {
   authenticated: boolean;
   subject: string;
   authMode: string;
   checkingSession: boolean;
+  guestEnabled: boolean;
 }
 
 function defaultState(): AuthState {
@@ -14,7 +15,8 @@ function defaultState(): AuthState {
     authenticated: false,
     subject: "",
     authMode: "",
-    checkingSession: true
+    checkingSession: true,
+    guestEnabled: false
   };
 }
 
@@ -26,10 +28,18 @@ export const useAuthStore = defineStore("auth", {
       this.subject = "";
       this.authMode = "";
     },
-    applySessionState(payload: { authenticated: boolean; subject?: string | null; auth_mode?: string | null }) {
+    applySessionState(payload: {
+      authenticated: boolean;
+      subject?: string | null;
+      auth_mode?: string | null;
+      guest_enabled?: boolean;
+    }) {
       this.authenticated = payload.authenticated;
       this.subject = payload.subject ?? "";
       this.authMode = payload.auth_mode ?? "";
+      if (typeof payload.guest_enabled === "boolean") {
+        this.guestEnabled = payload.guest_enabled;
+      }
     },
     async restoreSession() {
       this.checkingSession = true;
@@ -43,6 +53,14 @@ export const useAuthStore = defineStore("auth", {
       this.checkingSession = true;
       try {
         this.applySessionState(await loginWithPassword(password));
+      } finally {
+        this.checkingSession = false;
+      }
+    },
+    async loginAsGuest() {
+      this.checkingSession = true;
+      try {
+        this.applySessionState(await loginAsGuest());
       } finally {
         this.checkingSession = false;
       }

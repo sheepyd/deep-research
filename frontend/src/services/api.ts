@@ -11,6 +11,7 @@ export interface SessionState {
   authenticated: boolean;
   subject?: string | null;
   auth_mode?: string | null;
+  guest_enabled?: boolean;
 }
 
 export class ApiError extends Error {
@@ -67,6 +68,12 @@ export function loginWithPassword(password: string): Promise<SessionState> {
   return request("/api/v1/auth/login", {
     method: "POST",
     body: JSON.stringify({ password })
+  });
+}
+
+export function loginAsGuest(): Promise<SessionState> {
+  return request("/api/v1/auth/guest", {
+    method: "POST"
   });
 }
 

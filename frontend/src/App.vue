@@ -18,6 +18,15 @@ async function signIn(): Promise<void> {
   }
 }
 
+async function enterAsGuest(): Promise<void> {
+  loginError.value = "";
+  try {
+    await authStore.loginAsGuest();
+  } catch (error) {
+    loginError.value = error instanceof Error ? error.message : "游客进入失败";
+  }
+}
+
 function handleUnauthorized(): void {
   authStore.applyAnonymousState();
   ElMessage.error("登录已失效，请重新登录。");
@@ -52,7 +61,9 @@ onBeforeUnmount(() => {
         <p class="text-xs font-display uppercase tracking-[0.25em] text-accent">Secure Access</p>
         <h1 class="text-3xl font-heading text-foreground">Deep Research</h1>
         <p class="text-sm text-mutedForeground">
-          这个实例现在使用服务端会话认证。输入部署时配置的管理密码继续。
+          这个实例现在使用服务端会话认证。输入部署时配置的管理密码继续{{
+            authStore.guestEnabled ? "，或以游客身份进入。" : "。"
+          }}
         </p>
       </div>
       <el-alert
@@ -71,6 +82,14 @@ onBeforeUnmount(() => {
       />
       <el-button type="primary" class="w-full" :loading="authStore.checkingSession" @click="signIn">
         登录
+      </el-button>
+      <el-button
+        v-if="authStore.guestEnabled"
+        class="w-full"
+        :loading="authStore.checkingSession"
+        @click="enterAsGuest"
+      >
+        游客进入
       </el-button>
     </div>
   </div>

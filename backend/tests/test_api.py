@@ -8,7 +8,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.router import api_router
 from app.api.routes.mcp import _sse_session_stream, session_manager
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 
 
 class FakeService:
@@ -171,6 +171,35 @@ def test_login_and_session_cookie(client: TestClient) -> None:
     session_response = client.get("/api/v1/auth/session")
     assert session_response.status_code == 200
     assert session_response.json()["authenticated"] is True
+
+
+def test_guest_login_disabled_by_default(client: TestClient) -> None:
+    response = client.post("/api/v1/auth/guest")
+    assert response.status_code == 403
+
+    session_response = client.get("/api/v1/auth/session")
+    assert session_response.json()["guest_enabled"] is False
+
+
+def test_guest_login_when_enabled() -> None:
+    app = FastAPI()
+    app.add_middleware(SessionMiddleware, secret_key="test-session-secret")
+    app.state.research_service = FakeService()
+    app.state.stream_manager = object()
+    app.include_router(api_router, prefix="/api/v1")
+    app.dependency_overrides[get_settings] = lambda: Settings(allow_guest_access=True)
+    guest_client = TestClient(app)
+
+    response = guest_client.post("/api/v1/auth/guest")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["authenticated"] is True
+    assert payload["auth_mode"] == "guest"
+    assert payload["subject"].startswith("guest:")
+    assert payload["guest_enabled"] is True
+
+    session_response = guest_client.get("/api/v1/auth/session")
+    assert session_response.json()["auth_mode"] == "guest"
 
 
 def test_list_tasks(client: TestClient) -> None:

@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     api_bearer_token: str = "change-me"
     allow_bearer_auth: bool = True
+    allow_guest_access: bool = False
     web_username: str = "admin"
     web_password: str = "change-me"
     session_secret: str = "change-me-session-secret"

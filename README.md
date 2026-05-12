@@ -110,6 +110,7 @@ cp .env.example .env
 | `SESSION_COOKIE_SECURE` | HTTPS 部署时建议设为 `true` |
 | `API_BEARER_TOKEN` | 后端 Bearer Token，除 `/health` 外所有 `/api/v1/*` 请求都要带上 |
 | `ALLOW_BEARER_AUTH` | 是否允许 Bearer Token 访问 API / MCP；纯 Web 部署可设为 `false` |
+| `ALLOW_GUEST_ACCESS` | 是否允许登录页"游客进入"按钮；开启后任何人都能匿名使用 Web，会消耗你的 LLM/搜索配额 |
 | `APP_PORT` | Docker Compose 对外暴露的 HTTP 端口，默认 `4173` |
 | `POSTGRES_DB` | PostgreSQL 数据库名 |
 | `POSTGRES_USER` | PostgreSQL 用户名 |
