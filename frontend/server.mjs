@@ -50,6 +50,11 @@ async function proxyRequest(req, res) {
     headers.set(key, Array.isArray(value) ? value.join(", ") : value);
   }
 
+  // Forward X-Forwarded-Proto for proper session cookie secure attribute handling
+  if (req.headers["x-forwarded-proto"] && !headers.has("X-Forwarded-Proto")) {
+    headers.set("X-Forwarded-Proto", req.headers["x-forwarded-proto"]);
+  }
+
   let body;
   try {
     body = req.method && ["GET", "HEAD"].includes(req.method) ? undefined : await readRequestBody(req);

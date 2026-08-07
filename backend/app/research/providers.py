@@ -1,6 +1,8 @@
 import json
+import logging
+import re
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 import httpx
 from langchain_anthropic import ChatAnthropic
@@ -9,6 +11,10 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
 from app.core.config import Settings
+
+logger = logging.getLogger(__name__)
+
+_FENCE_RE = re.compile(r"```(?:json|JSON)?\s*(.*?)```", re.DOTALL)
 
 DEFAULT_PROVIDER_CATALOG = {
     "llm_providers": {
@@ -149,22 +155,24 @@ def create_llm(
     api_key: str | None = None,
     base_url: str | None = None,
 ) -> BaseChatModel:
+    if not model or not model.strip():
+        raise ValueError("Model name must not be empty")
     if provider == "openai":
         return ChatOpenAI(
-            model=model,
+            model=model.strip(),
             api_key=api_key or settings.openai_api_key,
             base_url=base_url or settings.openai_base_url,
             temperature=0,
         )
     if provider == "google":
         return ChatGoogleGenerativeAI(
-            model=model,
+            model=model.strip(),
             google_api_key=api_key or settings.google_api_key,
             temperature=0,
         )
     if provider == "anthropic":
         return ChatAnthropic(
-            model=model,
+            model=model.strip(),
             api_key=api_key or settings.anthropic_api_key,
             temperature=0,
         )
@@ -187,8 +195,85 @@ def create_search_client(
     raise ValueError(f"Unsupported search provider: {provider}")
 
 
+def _strip_code_fence(text: str) -> str:
+    stripped = text.strip()
+    match = _FENCE_RE.search(stripped)
+    if match:
+        return match.group(1).strip()
+    return stripped
+
+
+def _extract_first_json_object(text: str) -> Optional[str]:
+    """Best-effort extraction of the first balanced {...} or [...] JSON block.
+
+    Models frequently wrap JSON in prose (``Here is the answer: {...}``).
+    We scan for the first ``{`` or ``[`` and mirror braces/brackets until the
+    scope closes, accounting for string literals. Returns None if no valid block
+    is found.
+    """
+    open_ch = ""
+    close_ch = ""
+    start = -1
+    for index, char in enumerate(text):
+        if char in "{[":
+            start = index
+            open_ch = char
+            close_ch = "}" if char == "{" else "]"
+            break
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    end = -1
+    for offset, char in enumerate(text[start:]):
+        if escape:
+            escape = False
+            continue
+        if char == "\\" and in_string:
+            escape = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == open_ch:
+            depth += 1
+        elif char == close_ch:
+            depth -= 1
+            if depth == 0:
+                end = start + offset
+                break
+    if end == -1:
+        return None
+    return text[start: end + 1]
+
+
 def parse_json_response(content: str) -> object:
-    text = content.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    return json.loads(text)
+    text = _strip_code_fence(content)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        extracted = _extract_first_json_object(text)
+        if extracted is not None:
+            try:
+                return json.loads(extracted)
+            except json.JSONDecodeError:
+                pass
+        logger.debug("Failed to parse JSON response: %s", text[:200])
+        raise
+
+
+def parse_json_list_or_none(content: str) -> Optional[list]:
+    """Parse content as a JSON list, tolerating prose wrapping and fences.
+
+    Returns None when the content cannot be parsed as a JSON list. Used by
+    search query generation so that invalid model output can transparently fall
+    back to the supervisor's fallback query plan.
+    """
+    try:
+        parsed = parse_json_response(content)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, list) else None

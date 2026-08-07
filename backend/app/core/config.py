@@ -1,8 +1,26 @@
 from functools import lru_cache
 from typing import Optional
+import hashlib
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _parse_cors_origins(value: str, fallback: list[str]) -> list[str]:
+    # Accept either a JSON array ("[ \"a\", \"b\" ]") or a comma separated list.
+    value = value.strip()
+    if not value:
+        return fallback
+    if value.startswith("["):
+        try:
+            import json
+
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+        except json.JSONDecodeError:
+            pass
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 class Settings(BaseSettings):
@@ -28,6 +46,11 @@ class Settings(BaseSettings):
             "http://127.0.0.1:5173",
         ]
     )
+    # Optional CSV/JSON override for CORS origins, e.g. "https://a.example,https://b.example"
+    cors_origins_override: Optional[str] = None
+    login_max_attempts: int = 5
+    login_window_seconds: int = 60
+    login_min_delay_seconds: float = 0.25
     database_url: str = (
         "postgresql+asyncpg://deep_research:deep_research@localhost:5432/deep_research"
     )
@@ -40,7 +63,7 @@ class Settings(BaseSettings):
     anthropic_model_list: str = "claude-3-5-sonnet-latest,claude-3-7-sonnet-latest"
     tavily_api_key: Optional[str] = None
     searxng_base_url: str = "http://localhost:8080"
-    research_concurrency: int = 3
+    research_concurrency: int = 2
     max_active_tasks_per_owner: int = 2
     sse_keepalive_seconds: int = 15
     mcp_ai_provider: Optional[str] = None
@@ -49,6 +72,19 @@ class Settings(BaseSettings):
     mcp_search_provider: Optional[str] = None
     mcp_language: str = "zh-CN"
     mcp_max_results: int = 5
+
+    def effective_cors_origins(self) -> list[str]:
+        return _parse_cors_origins(self.cors_origins_override or "", self.cors_origins)
+
+    def derive_bearer_subject(self, token: str) -> str:
+        """Derive a stable subject from the bearer token.
+
+        This ensures each bearer token holder gets a unique subject, so that
+        multiple API clients using different tokens are isolated from each
+        other's tasks and MCP sessions.
+        """
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+        return f"bearer:{digest}"
 
     def validate_runtime(self) -> None:
         if self.app_env != "production":

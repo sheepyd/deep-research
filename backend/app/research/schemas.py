@@ -1,13 +1,16 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+LlmProviderName = Literal["openai", "google", "anthropic"]
+SearchProviderName = Literal["tavily", "searxng"]
 
 
 class ClarifyRequest(BaseModel):
     query: str = Field(min_length=3)
-    provider: str
-    thinking_model: str
+    provider: LlmProviderName
+    thinking_model: str = Field(min_length=1, max_length=128)
     language: str = "zh-CN"
 
 
@@ -22,12 +25,21 @@ class ResearchTaskCreateRequest(BaseModel):
     parent_task_id: Optional[str] = None
     research_iteration: int = Field(default=1, ge=1)
     follow_up_request: Optional[str] = None
-    provider: str
-    thinking_model: str
-    task_model: str
-    search_provider: str
+    provider: LlmProviderName
+    thinking_model: str = Field(min_length=1, max_length=128)
+    task_model: str = Field(min_length=1, max_length=128)
+    search_provider: SearchProviderName
     language: str = "zh-CN"
     max_results: int = Field(default=5, ge=1, le=10)
+
+    @field_validator("task_model")
+    @classmethod
+    def _task_model_must_not_be_blank(cls, value: str) -> str:
+        # Whitespace-only model names are rejected explicitly. The API surface
+        # still allows thinking == task model, which many setups rely on.
+        if not value.strip():
+            raise ValueError("task_model must not be empty")
+        return value
 
 
 class ResearchTaskCreateResponse(BaseModel):

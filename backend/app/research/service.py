@@ -23,6 +23,7 @@ from app.research.providers import (
     SearchDocument,
     create_llm,
     create_search_client,
+    parse_json_list_or_none,
     parse_json_response,
 )
 from app.research.repository import ResearchRepository
@@ -38,28 +39,11 @@ from app.research.streaming import StreamManager
 logger = logging.getLogger(__name__)
 
 
-class WorkflowState(dict):
-    task_id: str
-    parent_task_id: Optional[str]
-    research_iteration: int
-    query: str
-    questions: list[str]
-    answers: list[str]
-    follow_up_request: str
-    language: str
-    provider: str
-    thinking_model: str
-    task_model: str
-    search_provider: str
-    max_results: int
-    brief: str
-    previous_report: str
-    previous_plan: str
-    report_plan: str
-    search_tasks: list[dict[str, str]]
-    learnings: list[str]
-    sources: list[SearchDocument]
-    final_report: str
+# Workflow state keys (transmitted as a plain dict through LangGraph):
+# task_id, parent_task_id, research_iteration, query, questions, answers,
+# follow_up_request, language, provider, thinking_model, task_model,
+# search_provider, max_results, brief, previous_report, previous_plan,
+# report_plan, search_tasks, learnings, sources, final_report.
 
 
 class ResearchService:
@@ -309,7 +293,7 @@ class ResearchService:
         task = await repo.get_task(task_id, owner_id=owner_id)
         if task is None:
             raise HTTPException(status_code=404, detail="Task not found")
-        yield format_sse("infor", {"name": "deep-research", "version": "0.1.0", "task_id": task_id})
+        yield format_sse("info", {"name": "deep-research", "version": "0.1.0", "task_id": task_id})
         for event in await repo.list_events(task_id):
             yield format_sse(event.event_type, event.payload_json)
         if task.status in {"completed", "failed"}:
@@ -386,26 +370,34 @@ class ResearchService:
                     event="done",
                     data={"task_id": task_id, "status": "completed"},
                 )
+            except asyncio.CancelledError:
+                self._task_locks.pop(task_id, None)
+                self._task_runs.pop(task_id, None)
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Research task %s failed", task_id)
-                await repo.update_task(
-                    task,
-                    status="failed",
-                    current_step="failed",
-                    error_message="Research task failed. Check server logs for details.",
-                )
-                await self._emit_event(
-                    repo=repo,
-                    task_id=task_id,
-                    event="error",
-                    data={"task_id": task_id, "message": "Research task failed. Check server logs."},
-                )
-                await self._emit_event(
-                    repo=repo,
-                    task_id=task_id,
-                    event="done",
-                    data={"task_id": task_id, "status": "failed"},
-                )
+                # Re-check task existence: deleted tasks already CASCADE down to
+                # events/sources, so writing here would raise FK errors. Skip.
+                still_present = await repo.get_task(task_id)
+                if still_present is not None:
+                    await repo.update_task(
+                        task,
+                        status="failed",
+                        current_step="failed",
+                        error_message="Research task failed. Check server logs for details.",
+                    )
+                    await self._emit_event(
+                        repo=repo,
+                        task_id=task_id,
+                        event="error",
+                        data={"task_id": task_id, "message": "Research task failed. Check server logs."},
+                    )
+                    await self._emit_event(
+                        repo=repo,
+                        task_id=task_id,
+                        event="done",
+                        data={"task_id": task_id, "status": "failed"},
+                    )
             finally:
                 self._task_locks.pop(task_id, None)
                 self._task_runs.pop(task_id, None)
@@ -575,11 +567,17 @@ class ResearchService:
         async for chunk in llm.astream(messages):
             if chunk.content:
                 raw += chunk.content
-        search_tasks = parse_json_response(str(raw))
-        if not isinstance(search_tasks, list):
-            raise ValueError("Search task generation returned invalid payload")
-        search_tasks = self._normalize_search_tasks(search_tasks)
-        if not search_tasks:
+        search_tasks = parse_json_list_or_none(str(raw))
+        if search_tasks is None:
+            await self._emit_reasoning(
+                repo,
+                state["task_id"],
+                (
+                    "Supervisor received a non-JSON search task payload from the model "
+                    "and switched to fallback query generation."
+                ),
+                role="supervisor",
+            )
             search_tasks = self._fallback_search_tasks(
                 query=state["query"],
                 brief=state["brief"],
@@ -591,6 +589,20 @@ class ResearchService:
                 "Supervisor received no usable search tasks from the model and switched to fallback query generation.",
                 role="supervisor",
             )
+        else:
+            search_tasks = self._normalize_search_tasks(search_tasks)
+            if not search_tasks:
+                search_tasks = self._fallback_search_tasks(
+                    query=state["query"],
+                    brief=state["brief"],
+                    language=state["language"],
+                )
+                await self._emit_reasoning(
+                    repo,
+                    state["task_id"],
+                    "Supervisor received no usable search tasks from the model and switched to fallback query generation.",
+                    role="supervisor",
+                )
         await self._emit_reasoning(
             repo,
             state["task_id"],
@@ -1176,6 +1188,9 @@ class ResearchService:
         step: Optional[str] = None,
     ) -> None:
         db_event = await repo.append_event(task_id=task_id, event_type=event, payload=data, step=step)
+        if db_event is None:
+            # Task was deleted concurrently; nothing to publish.
+            return
         await self.stream_manager.publish(
             task_id,
             {
@@ -1188,15 +1203,30 @@ class ResearchService:
 
     @staticmethod
     def _chunk_text(text: str, size: int) -> list[str]:
+        """Split ``text`` into chunks of at most ``size`` characters.
+
+        The previous implementation split on whitespace, which made long CJK
+        reports collapse into a single ``word`` and defeated streaming. We now
+        break on the most recent whitespace within the budget when one exists
+        (so English text still splits on word boundaries), and otherwise hard
+        cut by character count. This keeps streaming progressive for both
+        space-delimited and CJK text. Trailing spaces are trimmed.
+        """
+        if size <= 0:
+            return [text] if text else []
         chunks: list[str] = []
-        current = ""
-        for word in text.split():
-            candidate = f"{current} {word}".strip()
-            if len(candidate) > size and current:
-                chunks.append(current + " ")
-                current = word
-            else:
-                current = candidate
-        if current:
-            chunks.append(current)
+        start = 0
+        text_len = len(text)
+        while start < text_len:
+            end = min(start + size, text_len)
+            if end < text_len:
+                # Prefer splitting at a whitespace boundary inside the window.
+                search_start = max(start, end - size)
+                last_space = text.rfind(" ", search_start, end)
+                if last_space != -1 and last_space > start:
+                    end = last_space
+            chunk = text[start:end].strip()
+            if chunk:
+                chunks.append(chunk)
+            start = end
         return chunks

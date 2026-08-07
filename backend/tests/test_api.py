@@ -142,7 +142,7 @@ class FakeService:
 
     def stream_task_events(self, session, stream_manager, task_id, owner_id):
         async def iterator():
-            yield b"event: infor\ndata: {}\n\n"
+            yield b"event: info\ndata: {}\n\n"
             yield b"event: done\ndata: {\"task_id\": \"%s\"}\n\n" % task_id.encode()
 
         return iterator()

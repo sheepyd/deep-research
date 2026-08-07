@@ -50,7 +50,7 @@ test("starts a mocked research workflow", async ({ page }) => {
       status: 200,
       contentType: "text/event-stream",
       body: [
-        "event: infor",
+        "event: info",
         'data: {"name":"deep-research","version":"0.1.0","task_id":"task-1"}',
         "",
         "event: progress",

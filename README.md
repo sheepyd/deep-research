@@ -108,7 +108,11 @@ cp .env.example .env
 | `WEB_PASSWORD` | Web 工作台登录密码，生产环境必须修改 |
 | `SESSION_SECRET` | Web 会话签名密钥，生产环境必须修改 |
 | `SESSION_COOKIE_SECURE` | HTTPS 部署时建议设为 `true` |
-| `API_BEARER_TOKEN` | 后端 Bearer Token，除 `/health` 外所有 `/api/v1/*` 请求都要带上 |
+| `CORS_ORIGINS_OVERRIDE` | 覆盖 CORS 白名单，逗号分隔的 URL 列表或 JSON 数组字符串；为空时使用默认 localhost 白名单，生产同源部署下不影响功能 |
+| `LOGIN_MAX_ATTEMPTS` | 同一客户端在窗口内允许的最大失败登录次数，超过将短暂锁定 |
+| `LOGIN_WINDOW_SECONDS` | 失败登录计数的滑动窗口长度（秒） |
+| `LOGIN_MIN_DELAY_SECONDS` | 登录失败时的最小延迟，用于拉平响应时间泄露 |
+| `API_BEARER_TOKEN` | 后端 Bearer Token，除 `/health` 外所有 `/api/v1/*` 请求都要带上；要隔离多个 API 客户端时为每个客户端使用不同的 token |
 | `ALLOW_BEARER_AUTH` | 是否允许 Bearer Token 访问 API / MCP；纯 Web 部署可设为 `false` |
 | `ALLOW_GUEST_ACCESS` | 是否允许登录页"游客进入"按钮；开启后任何人都能匿名使用 Web，会消耗你的 LLM/搜索配额 |
 | `APP_PORT` | Docker Compose 对外暴露的 HTTP 端口，默认 `4173` |
@@ -124,7 +128,7 @@ cp .env.example .env
 | `ANTHROPIC_MODEL_LIST` | 前端可选 Anthropic 模型列表，逗号分隔 |
 | `TAVILY_API_KEY` | Tavily 搜索 Key |
 | `SEARXNG_BASE_URL` | SearxNG 服务地址 |
-| `RESEARCH_CONCURRENCY` | 后端并发搜索任务数，VPS 建议先用 `1-2` |
+| `RESEARCH_CONCURRENCY` | 后端并发搜索任务数，VPS 建议先用 `1-2`，默认 `2` |
 | `MAX_ACTIVE_TASKS_PER_OWNER` | 单个登录主体允许同时运行的任务数上限 |
 | `MCP_AI_PROVIDER` | MCP 默认 AI Provider |
 | `MCP_THINKING_MODEL` | MCP 默认 Thinking Model |
@@ -322,7 +326,7 @@ SSE 事件流。连接建立后会先回放数据库中的历史事件，再继�
 
 当前后端支持这些事件类型：
 
-- `infor`
+- `info`
 - `progress`
 - `message`
 - `reasoning`
@@ -371,8 +375,15 @@ npm run test:e2e
 ## 已知限制
 
 - 这不是原项目的全量复刻，只覆盖 Deep Research 主链路。
-- 当前搜索阶段为了避免异步数据库会话冲突，采用顺序执行，不是并发搜索。
+- 当前搜索阶段使用带并发上限的 semaphore 控制（默认并发 2），用于规避异步数据库会话冲突风险。
 - 当前前端已补上历史侧栏和独立报告页，但仍没有 Artifact 编辑器和知识图谱视图。
-- 不支持文件上传、本地知识库、MCP、PWA、多 Key 轮转。
+- 不支持文件上传、本地知识库、PWA、多 Key 轮转。（MCP Server 已在上文单独描述。）
 - 如果你接的是 OpenAI 兼容网关，最终报告阶段的耗时会高度依赖该网关对长文本生成的稳定性。
 - 后端建议统一使用 Python `3.11+`，避免 Python 3.9 带来的 Google 依赖 EOL warning。
+
+### 安全隔离边界
+
+- Web 登录使用服务端会话，任务按 `subject`（Web 登录=相同管理主体、游客=`guest:<random>`）隔离；同一主体共享任务范围是设计选择。
+- Bearer 认证的 `subject` 由 token 派生为 `bearer:<sha256(token)[:12]>`。**要让多个 API 客户端互不可见，请为每个客户端使用不同的 `API_BEARER_TOKEN`**，并在每个 MCP 配置里写自己的 token；单 token 部署下所有 bearer 调用方共享一个 subject，互相可见任务。
+- MCP SSE 会话绑定创建时的 subject，仅同 subject 才能向对应 `sessionId` 发送消息；不要把 `sessionId` 放进可索引的日志位置。
+- **MCP `deep-research.run` 和 `deep-research.follow-up` 是同步阻塞调用**：它们等待整个研究任务完成后才返回结果。在研究执行期间会持续占用一个 `MAX_ACTIVE_TASKS_PER_OWNER` 配额槽位，可能导致同一 subject 的其他 Web 或 MCP 请求因 429 而被拒绝。建议生产部署时提高 `MAX_ACTIVE_TASKS_PER_OWNER`（默认 2）或使用独立的 Bearer token 为 MCP 客户端分配独立的任务配额。
